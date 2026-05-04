@@ -1,0 +1,41 @@
+video:
+  input_path: data/videos/Tino3.mp4
+  candidate_num_frames: 1000
+  image_size: 64
+  color_mode: rgb
+
+selection:
+  num_frames: 400
+  distance_metric: l2
+  include_endpoints: true
+  local_refine_iterations: 3
+  local_refine_window: 12
+
+model:
+  latent_dim: 3
+
+train:
+  epochs: 200
+  batch_size: 16
+  learning_rate: 0.001
+  seed: 42
+  num_workers: 0
+  device: auto
+
+output:
+  output_dir: artifacts/keyframe_selection/tino_rgb
+  selected_csv: selected_frames.csv
+  selected_frame_dir: selected_frames
+  uniform_frame_dir: uniform_frames
+  frame_index_plot: frame_index_comparison.png
+  latent_html: latent_space.html
+  latent_npz: all_frame_latents.npz
+  checkpoint: autoencoder.pt
+  metrics_json: selection_metrics.json
+  save_selected_original_size: true
+
+visualization:
+  dimensions: 3
+  annotate_every: 5
+  show_all_candidates: true
+  show_selected_path: true
