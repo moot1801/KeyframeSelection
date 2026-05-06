@@ -5,6 +5,9 @@ video:
   color_mode: grayscale
 
 selection:
+  name: arclength_local_refine
+  module: keyframe_pipeline.selectors.arclength_local_refine
+  class_name: ArclengthLocalRefineSelectionStrategy
   num_frames: 400
   distance_metric: l2
   include_endpoints: true
@@ -12,12 +15,31 @@ selection:
   local_refine_window: 12
 
 model:
+  name: conv_autoencoder
+  module: keyframe_pipeline.models.conv_autoencoder
+  class_name: ConvAutoEncoder
   latent_dim: 3
+  kwargs:
+    encoder_channels: [32, 64, 128, 256]
+    activation: relu
+    output_activation: sigmoid
+
+optimizer:
+  name: adam
+  module: keyframe_pipeline.optimizers.torch_optimizers
+  class_name: AdamOptimizerStrategy
+  learning_rate: 0.001
+  weight_decay: 0.0
+  momentum: 0.0
+
+loss:
+  name: mse
+  module: keyframe_pipeline.losses.basic
+  class_name: MSELossStrategy
 
 train:
   epochs: 200
   batch_size: 16
-  learning_rate: 0.001
   seed: 42
   num_workers: 0
   device: auto
@@ -35,6 +57,9 @@ output:
   save_selected_original_size: true
 
 visualization:
+  name: plotly_latent
+  module: keyframe_pipeline.visualizers.plotly_latent
+  class_name: PlotlyLatentVisualizationStrategy
   dimensions: 3
   annotate_every: 5
   show_all_candidates: true
