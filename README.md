@@ -127,6 +127,7 @@ visualization:
 | `uniform_frames/*.png` | 비교용 균등 샘플링 프레임 이미지 |
 | `frame_index_comparison.png` | selection order 기준 uniform/keyframe frame index 비교 plot |
 | `timeline_comparison.mp4` | 왼쪽 원본 영상 + 오른쪽 frame index timeline 그래프 + 현재 위치 bar |
+| `selected_vs_uniform.mp4` | 왼쪽 KS 선택 프레임 + 오른쪽 균등 샘플링 프레임을 일정 간격으로 넘기는 비교 영상 |
 | `all_frame_latents.npz` | 전체 영상 프레임 latent, frame index, timestamp, 선택 결과 |
 | `latent_space.html` | latent 공간, 선택 경로, label, 통계 패널 HTML |
 | `autoencoder.pt` | 학습된 autoencoder checkpoint |
@@ -160,6 +161,16 @@ visualization:
 | selected row | keyframe selector가 고른 frame index |
 | uniform row | 균등 샘플링 비교 frame index |
 | current bar | 현재 재생 중인 원본 frame index 위치 |
+
+### `selected_vs_uniform.mp4`
+
+KS 선택 프레임 집합과 균등 샘플링 프레임 집합을 같은 순서로 나란히 보여주는 MP4 산출물입니다.
+
+| 영역 | 설명 |
+|---|---|
+| 왼쪽 | KS selector가 선택한 프레임 |
+| 오른쪽 | 같은 order의 균등 샘플링 프레임 |
+| 전환 간격 | `output.selected_vs_uniform_interval_sec`, 기본값 `0.2`초 |
 
 ## 선택 알고리즘
 

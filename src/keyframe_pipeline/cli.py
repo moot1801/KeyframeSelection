@@ -54,6 +54,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         encode_video_frames,
         export_selected_images,
         extract_candidate_frames,
+        save_selected_vs_uniform_video,
         save_timeline_comparison_video,
     )
     from keyframe_pipeline.visualizers import build_visualizer, save_frame_index_comparison_plot
@@ -165,6 +166,15 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         filename_prefix="uniform",
     )
     print(f"  - uniform comparison images saved: count={len(uniform_frame_indices)}, dir={uniform_image_dir}")
+    selected_vs_uniform_video_path = output_dir / config.output.selected_vs_uniform_video
+    save_selected_vs_uniform_video(
+        video_path=config.video.input_path,
+        selected_frame_indices=selected_frame_indices,
+        uniform_frame_indices=uniform_frame_indices,
+        output_path=selected_vs_uniform_video_path,
+        interval_sec=config.output.selected_vs_uniform_interval_sec,
+    )
+    print(f"  - selected/uniform comparison video saved: {selected_vs_uniform_video_path}")
     frame_index_plot_path = output_dir / config.output.frame_index_plot
     save_frame_index_comparison_plot(
         output_path=frame_index_plot_path,
@@ -242,6 +252,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         "selected_csv": csv_path,
         "selected_frame_dir": selected_image_dir,
         "uniform_frame_dir": uniform_image_dir,
+        "selected_vs_uniform_video": selected_vs_uniform_video_path,
         "frame_index_plot": frame_index_plot_path,
         "timeline_comparison_video": timeline_video_path,
         "latent_html": latent_html_path,

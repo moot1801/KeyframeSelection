@@ -406,3 +406,116 @@ def save_timeline_comparison_video(
     capture.release()
     writer.release()
     print(f"  - timeline video complete: frames={frame_index}, path={output_path}")
+
+
+def read_frame_at(capture: cv2.VideoCapture, frame_index: int, video_path: Path) -> np.ndarray:
+    capture.set(cv2.CAP_PROP_POS_FRAMES, int(frame_index))
+    success, frame = capture.read()
+    if not success:
+        raise RuntimeError(f"비교 영상 생성 중 프레임 읽기 실패: path={video_path}, frame_index={frame_index}")
+    return frame
+
+
+def prepare_comparison_frame(
+    frame: np.ndarray,
+    size: tuple[int, int],
+    title: str,
+    frame_index: int,
+    color: tuple[int, int, int],
+) -> np.ndarray:
+    resized = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
+    overlay = resized.copy()
+    cv2.rectangle(overlay, (0, 0), (size[0], 44), (15, 23, 42), -1)
+    cv2.addWeighted(overlay, 0.82, resized, 0.18, 0.0, resized)
+    cv2.rectangle(resized, (12, 10), (28, 26), color, -1)
+    draw_text(
+        resized,
+        f"{title}   frame={int(frame_index):,}",
+        (38, 27),
+        scale=0.52,
+        color=(255, 255, 255),
+        thickness=1,
+    )
+    return resized
+
+
+def save_selected_vs_uniform_video(
+    video_path: Path,
+    selected_frame_indices: np.ndarray,
+    uniform_frame_indices: np.ndarray,
+    output_path: Path,
+    interval_sec: float = 0.2,
+    output_height: int = 720,
+) -> None:
+    if interval_sec <= 0:
+        raise ValueError("selected/uniform 비교 영상 interval_sec는 0보다 커야 합니다.")
+    if len(selected_frame_indices) != len(uniform_frame_indices):
+        raise ValueError(
+            "selected/uniform 비교 영상은 두 프레임 집합의 길이가 같아야 합니다: "
+            f"selected={len(selected_frame_indices)}, uniform={len(uniform_frame_indices)}"
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise FileNotFoundError(f"selected/uniform 비교 영상을 만들기 위해 영상을 열 수 없습니다: {video_path}")
+
+    source_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    source_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if source_width <= 0 or source_height <= 0:
+        capture.release()
+        raise RuntimeError(f"영상 크기를 확인할 수 없습니다: {video_path}")
+
+    pane_height = even(output_height)
+    pane_width = even(int(round(pane_height * source_width / float(source_height))))
+    output_size = (pane_width * 2, pane_height)
+    writer_fps = 1.0 / interval_sec
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        writer_fps,
+        output_size,
+    )
+    if not writer.isOpened():
+        capture.release()
+        raise RuntimeError(f"selected/uniform 비교 영상 writer를 열 수 없습니다: {output_path}")
+
+    pair_count = len(selected_frame_indices)
+    print(
+        "  - selected/uniform video setup: "
+        f"source={video_path}, output={output_path}, pairs={pair_count}, "
+        f"interval_sec={interval_sec:.3f}, fps={writer_fps:.3f}, "
+        f"output_size={output_size[0]}x{output_size[1]}"
+    )
+
+    pane_size = (pane_width, pane_height)
+    for order, (selected_index, uniform_index) in enumerate(
+        zip(selected_frame_indices.astype(int), uniform_frame_indices.astype(int)),
+        start=1,
+    ):
+        selected_frame = read_frame_at(capture, int(selected_index), video_path)
+        uniform_frame = read_frame_at(capture, int(uniform_index), video_path)
+        selected_panel = prepare_comparison_frame(
+            selected_frame,
+            size=pane_size,
+            title=f"KS selected #{order - 1}",
+            frame_index=int(selected_index),
+            color=(220, 38, 38),
+        )
+        uniform_panel = prepare_comparison_frame(
+            uniform_frame,
+            size=pane_size,
+            title=f"Uniform #{order - 1}",
+            frame_index=int(uniform_index),
+            color=(37, 99, 235),
+        )
+        writer.write(np.concatenate([selected_panel, uniform_panel], axis=1))
+        if should_log_progress(order, pair_count):
+            print(
+                "  - selected/uniform video progress: "
+                f"{order}/{pair_count}, selected_frame={int(selected_index)}, uniform_frame={int(uniform_index)}"
+            )
+
+    capture.release()
+    writer.release()
+    print(f"  - selected/uniform video complete: frames={pair_count}, path={output_path}")
