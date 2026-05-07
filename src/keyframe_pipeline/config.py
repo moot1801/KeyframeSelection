@@ -70,6 +70,7 @@ class OutputConfig:
     selected_frame_dir: str
     uniform_frame_dir: str
     frame_index_plot: str
+    timeline_comparison_video: str
     latent_html: str
     latent_npz: str
     checkpoint: str
@@ -436,6 +437,9 @@ def parse_config(config_path: Path) -> PipelineConfig:
             selected_frame_dir=str(require_value(output, "output", "selected_frame_dir")),
             uniform_frame_dir=str(require_value(output, "output", "uniform_frame_dir")),
             frame_index_plot=str(require_value(output, "output", "frame_index_plot")),
+            timeline_comparison_video=str(
+                optional_value(output, "timeline_comparison_video", "timeline_comparison.mp4")
+            ),
             latent_html=str(require_value(output, "output", "latent_html")),
             latent_npz=str(require_value(output, "output", "latent_npz")),
             checkpoint=str(require_value(output, "output", "checkpoint")),

@@ -55,6 +55,37 @@ def _distance_stats(values: np.ndarray) -> dict[str, float | None]:
     }
 
 
+def _linear_fractions(latents: np.ndarray) -> np.ndarray:
+    if len(latents) == 0:
+        return np.asarray([], dtype=np.float32)
+    if len(latents) == 1:
+        return np.asarray([0.0], dtype=np.float32)
+
+    distances = np.linalg.norm(np.diff(latents, axis=0), axis=1)
+    cumulative = np.concatenate([[0.0], np.cumsum(distances)]).astype(np.float32)
+    total = float(cumulative[-1])
+    if total <= 0:
+        return np.linspace(0.0, 1.0, len(latents), dtype=np.float32)
+    return (cumulative / total).astype(np.float32)
+
+
+def _linearized_coords(coords: np.ndarray, fractions: np.ndarray) -> np.ndarray:
+    if len(coords) == 0:
+        return coords.copy()
+
+    start = coords[0].astype(np.float32)
+    direction = (coords[-1] - coords[0]).astype(np.float32)
+    if float(np.linalg.norm(direction)) <= 1e-8:
+        span = np.ptp(coords, axis=0).astype(np.float32)
+        axis = int(np.argmax(span)) if len(span) else 0
+        fallback_span = max(float(span[axis]) if len(span) else 0.0, 1.0)
+        direction = np.zeros(coords.shape[1], dtype=np.float32)
+        direction[axis] = fallback_span
+        start = coords.mean(axis=0).astype(np.float32) - (direction * 0.5)
+
+    return (start[None, :] + fractions[:, None] * direction[None, :]).astype(np.float32)
+
+
 class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
     name = "plotly_latent_controls"
 
@@ -71,16 +102,19 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         coords = project_latents(latents, config.dimensions)
+        linear_fractions = _linear_fractions(latents)
+        linear_coords = _linearized_coords(coords, linear_fractions)
         candidate_orders = np.arange(len(latents), dtype=np.int32)
         selected_orders = selected_candidate_orders.astype(np.int32)
         selected_coords = coords[selected_orders]
+        selected_linear_coords = linear_coords[selected_orders]
         selected_frame_indices = frame_indices[selected_orders]
         selected_timestamps_sec = timestamps_sec[selected_orders]
 
         selected_mask = np.zeros(len(latents), dtype=bool)
         selected_mask[selected_orders] = True
         custom_data = np.stack(
-            [candidate_orders, frame_indices, timestamps_sec, selected_mask.astype(np.int32)],
+            [candidate_orders, frame_indices, timestamps_sec, selected_mask.astype(np.int32), linear_fractions],
             axis=1,
         )
         selected_data = custom_data[selected_orders]
@@ -94,6 +128,7 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
         show_selected_frames = _as_bool(kwargs.get("show_selected_frames"), True)
         show_selected_labels = _as_bool(kwargs.get("show_selected_labels"), config.annotate_every > 0)
         show_candidate_order = _as_bool(kwargs.get("show_candidate_order"), False)
+        show_linear_view = _as_bool(kwargs.get("show_linear_view"), False)
         candidate_order_every = max(
             1,
             _as_int(kwargs.get("candidate_order_every"), max(1, len(latents) // 80)),
@@ -109,10 +144,15 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
             candidate_label_orders = np.concatenate([candidate_label_orders, candidate_orders[-1:]])
 
         traces: list[object] = []
-        trace_map: dict[str, int] = {}
+        trace_map: dict[str, list[int]] = {}
+        linear_trace_map: dict[str, list[int]] = {}
 
         def add_trace(name: str, trace: object) -> None:
-            trace_map[name] = len(traces)
+            trace_map.setdefault(name, []).append(len(traces))
+            traces.append(trace)
+
+        def add_linear_trace(name: str, trace: object) -> None:
+            linear_trace_map.setdefault(name, []).append(len(traces))
             traces.append(trace)
 
         if config.dimensions == 3:
@@ -216,6 +256,123 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                     hoverinfo="skip",
                 ),
             )
+            if len(linear_coords):
+                linear_endpoints = linear_coords[[0, -1]]
+                add_linear_trace(
+                    "linear_view",
+                    go.Scatter3d(
+                        x=linear_endpoints[:, 0],
+                        y=linear_endpoints[:, 1],
+                        z=linear_endpoints[:, 2],
+                        mode="lines",
+                        name="linear start-end",
+                        visible=show_linear_view,
+                        line={"color": "#334155", "width": 5},
+                        hoverinfo="skip",
+                    ),
+                )
+                add_linear_trace(
+                    "candidate_frames",
+                    go.Scatter3d(
+                        x=linear_coords[:, 0],
+                        y=linear_coords[:, 1],
+                        z=linear_coords[:, 2],
+                        mode="markers",
+                        name="linear candidate frames",
+                        visible=show_linear_view and show_candidate_frames,
+                        marker={
+                            "size": 2,
+                            "color": candidate_orders,
+                            "colorscale": "Viridis",
+                            "opacity": 0.45,
+                            "showscale": False,
+                        },
+                        customdata=custom_data,
+                        hovertemplate=(
+                            "linear candidate<br>"
+                            "candidate_order=%{customdata[0]}<br>"
+                            "frame_idx=%{customdata[1]}<br>"
+                            "time=%{customdata[2]:.3f}s<br>"
+                            "linear_position=%{customdata[4]:.4f}<extra></extra>"
+                        ),
+                    ),
+                )
+                add_linear_trace(
+                    "selected_path",
+                    go.Scatter3d(
+                        x=selected_linear_coords[:, 0],
+                        y=selected_linear_coords[:, 1],
+                        z=selected_linear_coords[:, 2],
+                        mode="lines",
+                        name="linear selected path",
+                        visible=show_linear_view and show_selected_path,
+                        line={"color": "#dc2626", "width": 5},
+                        customdata=selected_data,
+                        hovertemplate=(
+                            "linear selected path<br>"
+                            "candidate_order=%{customdata[0]}<br>"
+                            "frame_idx=%{customdata[1]}<br>"
+                            "time=%{customdata[2]:.3f}s<br>"
+                            "linear_position=%{customdata[4]:.4f}<extra></extra>"
+                        ),
+                    ),
+                )
+                add_linear_trace(
+                    "selected_frames",
+                    go.Scatter3d(
+                        x=selected_linear_coords[:, 0],
+                        y=selected_linear_coords[:, 1],
+                        z=selected_linear_coords[:, 2],
+                        mode="markers",
+                        name="linear selected frames",
+                        visible=show_linear_view and show_selected_frames,
+                        marker={
+                            "size": 6,
+                            "color": "#f97316",
+                            "line": {"color": "#7f1d1d", "width": 2},
+                        },
+                        customdata=selected_data,
+                        hovertemplate=(
+                            "linear selected frame<br>"
+                            "selection_order=%{pointNumber}<br>"
+                            "candidate_order=%{customdata[0]}<br>"
+                            "frame_idx=%{customdata[1]}<br>"
+                            "time=%{customdata[2]:.3f}s<br>"
+                            "linear_position=%{customdata[4]:.4f}<extra></extra>"
+                        ),
+                    ),
+                )
+                add_linear_trace(
+                    "selected_labels",
+                    go.Scatter3d(
+                        x=linear_coords[selected_label_orders, 0],
+                        y=linear_coords[selected_label_orders, 1],
+                        z=linear_coords[selected_label_orders, 2],
+                        mode="text",
+                        name="linear selected labels",
+                        visible=show_linear_view and show_selected_labels,
+                        text=[
+                            f"S{order}:F{int(frame_indices[candidate_order])}"
+                            for order, candidate_order in zip(selected_label_positions, selected_label_orders)
+                        ],
+                        textposition="top center",
+                        hoverinfo="skip",
+                    ),
+                )
+                add_linear_trace(
+                    "candidate_order",
+                    go.Scatter3d(
+                        x=linear_coords[candidate_label_orders, 0],
+                        y=linear_coords[candidate_label_orders, 1],
+                        z=linear_coords[candidate_label_orders, 2],
+                        mode="text",
+                        name="linear candidate order",
+                        visible=show_linear_view and show_candidate_order,
+                        text=[str(int(order)) for order in candidate_label_orders],
+                        textposition="middle center",
+                        hoverinfo="skip",
+                    ),
+                )
             fig = go.Figure(data=traces)
             fig.update_layout(
                 title="Latent Space Keyframe Selection",
@@ -325,6 +482,117 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                     hoverinfo="skip",
                 ),
             )
+            if len(linear_coords):
+                linear_endpoints = linear_coords[[0, -1]]
+                add_linear_trace(
+                    "linear_view",
+                    go.Scatter(
+                        x=linear_endpoints[:, 0],
+                        y=linear_endpoints[:, 1],
+                        mode="lines",
+                        name="linear start-end",
+                        visible=show_linear_view,
+                        line={"color": "#334155", "width": 3},
+                        hoverinfo="skip",
+                    ),
+                )
+                add_linear_trace(
+                    "candidate_frames",
+                    go.Scatter(
+                        x=linear_coords[:, 0],
+                        y=linear_coords[:, 1],
+                        mode="markers",
+                        name="linear candidate frames",
+                        visible=show_linear_view and show_candidate_frames,
+                        marker={
+                            "size": 5,
+                            "color": candidate_orders,
+                            "colorscale": "Viridis",
+                            "opacity": 0.45,
+                            "showscale": False,
+                        },
+                        customdata=custom_data,
+                        hovertemplate=(
+                            "linear candidate<br>"
+                            "candidate_order=%{customdata[0]}<br>"
+                            "frame_idx=%{customdata[1]}<br>"
+                            "time=%{customdata[2]:.3f}s<br>"
+                            "linear_position=%{customdata[4]:.4f}<extra></extra>"
+                        ),
+                    ),
+                )
+                add_linear_trace(
+                    "selected_path",
+                    go.Scatter(
+                        x=selected_linear_coords[:, 0],
+                        y=selected_linear_coords[:, 1],
+                        mode="lines",
+                        name="linear selected path",
+                        visible=show_linear_view and show_selected_path,
+                        line={"color": "#dc2626", "width": 3},
+                        customdata=selected_data,
+                        hovertemplate=(
+                            "linear selected path<br>"
+                            "candidate_order=%{customdata[0]}<br>"
+                            "frame_idx=%{customdata[1]}<br>"
+                            "time=%{customdata[2]:.3f}s<br>"
+                            "linear_position=%{customdata[4]:.4f}<extra></extra>"
+                        ),
+                    ),
+                )
+                add_linear_trace(
+                    "selected_frames",
+                    go.Scatter(
+                        x=selected_linear_coords[:, 0],
+                        y=selected_linear_coords[:, 1],
+                        mode="markers",
+                        name="linear selected frames",
+                        visible=show_linear_view and show_selected_frames,
+                        marker={
+                            "size": 8,
+                            "color": "#f97316",
+                            "line": {"color": "#7f1d1d", "width": 1},
+                        },
+                        customdata=selected_data,
+                        hovertemplate=(
+                            "linear selected frame<br>"
+                            "selection_order=%{pointNumber}<br>"
+                            "candidate_order=%{customdata[0]}<br>"
+                            "frame_idx=%{customdata[1]}<br>"
+                            "time=%{customdata[2]:.3f}s<br>"
+                            "linear_position=%{customdata[4]:.4f}<extra></extra>"
+                        ),
+                    ),
+                )
+                add_linear_trace(
+                    "selected_labels",
+                    go.Scatter(
+                        x=linear_coords[selected_label_orders, 0],
+                        y=linear_coords[selected_label_orders, 1],
+                        mode="text",
+                        name="linear selected labels",
+                        visible=show_linear_view and show_selected_labels,
+                        text=[
+                            f"S{order}:F{int(frame_indices[candidate_order])}"
+                            for order, candidate_order in zip(selected_label_positions, selected_label_orders)
+                        ],
+                        textposition="top center",
+                        hoverinfo="skip",
+                    ),
+                )
+                add_linear_trace(
+                    "candidate_order",
+                    go.Scatter(
+                        x=linear_coords[candidate_label_orders, 0],
+                        y=linear_coords[candidate_label_orders, 1],
+                        mode="text",
+                        name="linear candidate order",
+                        visible=show_linear_view and show_candidate_order,
+                        text=[str(int(order)) for order in candidate_label_orders],
+                        textposition="middle center",
+                        hoverinfo="skip",
+                    ),
+                )
             fig = go.Figure(data=traces)
             fig.update_layout(
                 title="Latent Space Keyframe Selection",
@@ -359,6 +627,7 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
             else None,
         }
         initial_state = {
+            "linear_view": show_linear_view,
             "candidate_frames": show_candidate_frames,
             "selected_path": show_selected_path,
             "selected_frames": show_selected_frames,
@@ -370,6 +639,7 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
         page_html = _build_page_html(
             plot_html=plot_html,
             trace_map=trace_map,
+            linear_trace_map=linear_trace_map,
             stats=stats,
             initial_state=initial_state,
         )
@@ -378,7 +648,8 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
 
 def _build_page_html(
     plot_html: str,
-    trace_map: dict[str, int],
+    trace_map: dict[str, list[int]],
+    linear_trace_map: dict[str, list[int]],
     stats: dict[str, object],
     initial_state: dict[str, bool],
 ) -> str:
@@ -494,6 +765,9 @@ def _build_page_html(
     </section>
     <aside class="side-panel">
       <h1>Latent Space Controls</h1>
+      <h2>View</h2>
+      <label class="control"><input id="toggle-linear-view" type="checkbox"> Linear latent view</label>
+
       <h2>Layers</h2>
       <label class="control"><input id="toggle-candidate-frames" type="checkbox"> Candidate frames</label>
       <label class="control"><input id="toggle-selected-path" type="checkbox"> Selected path</label>
@@ -504,6 +778,7 @@ def _build_page_html(
       <h2>Visible</h2>
       <table class="stats-table">
         <tbody>
+          <tr><th>Linear view</th><td id="visible-linear-view"></td></tr>
           <tr><th>Visible frame points</th><td id="visible-frame-points"></td></tr>
           <tr><th>Visible selected labels</th><td id="visible-selected-labels"></td></tr>
           <tr><th>Visible candidate order labels</th><td id="visible-candidate-order-labels"></td></tr>
@@ -538,8 +813,16 @@ def _build_page_html(
   </main>
   <script>
     const latentTraceMap = __TRACE_MAP_JSON__;
+    const latentLinearTraceMap = __LINEAR_TRACE_MAP_JSON__;
     const latentStats = __STATS_JSON__;
     const latentInitialState = __INITIAL_STATE_JSON__;
+    const latentLayerKeys = [
+      "candidate_frames",
+      "selected_path",
+      "selected_frames",
+      "selected_labels",
+      "candidate_order"
+    ];
 
     function getPlot() {
       return document.querySelector(".plotly-graph-div");
@@ -547,6 +830,7 @@ def _build_page_html(
 
     function getControl(key) {
       const ids = {
+        linear_view: "toggle-linear-view",
         candidate_frames: "toggle-candidate-frames",
         selected_path: "toggle-selected-path",
         selected_frames: "toggle-selected-frames",
@@ -585,19 +869,23 @@ def _build_page_html(
     }
 
     function updateVisibleStats() {
+      const linearView = getControl("linear_view").checked;
       const candidateFrames = getControl("candidate_frames").checked;
       const selectedFrames = getControl("selected_frames").checked;
       const selectedLabels = getControl("selected_labels").checked;
       const candidateOrder = getControl("candidate_order").checked;
 
-      const visibleFramePoints = candidateFrames
-        ? latentStats.candidate_count
-        : selectedFrames
-          ? latentStats.selected_count
-          : 0;
+      const visibleFramePoints = (
+        (candidateFrames ? latentStats.candidate_count : 0) +
+        (selectedFrames ? latentStats.selected_count : 0)
+      );
 
+      setText("visible-linear-view", linearView ? "on" : "off");
       setText("visible-frame-points", formatInteger(visibleFramePoints));
-      setText("visible-selected-labels", formatInteger(selectedLabels ? latentStats.selected_label_count : 0));
+      setText(
+        "visible-selected-labels",
+        formatInteger(selectedLabels ? latentStats.selected_label_count : 0)
+      );
       setText(
         "visible-candidate-order-labels",
         formatInteger(candidateOrder ? latentStats.candidate_order_label_count : 0)
@@ -633,12 +921,27 @@ def _build_page_html(
       );
     }
 
-    function setTraceVisible(key, visible) {
+    function setTraceIndicesVisible(indices, visible) {
       const plot = getPlot();
-      if (!plot || latentTraceMap[key] === undefined || !window.Plotly) {
+      if (!plot || indices === undefined || !window.Plotly) {
         return;
       }
-      Plotly.restyle(plot, {visible}, [latentTraceMap[key]]);
+      const traceIndices = Array.isArray(indices) ? indices : [indices];
+      if (traceIndices.length === 0) {
+        return;
+      }
+      Plotly.restyle(plot, {visible}, traceIndices);
+    }
+
+    function applyVisibility() {
+      const linearView = getControl("linear_view").checked;
+      setTraceIndicesVisible(latentLinearTraceMap.linear_view, linearView);
+      latentLayerKeys.forEach((key) => {
+        const enabled = getControl(key).checked;
+        setTraceIndicesVisible(latentTraceMap[key], !linearView && enabled);
+        setTraceIndicesVisible(latentLinearTraceMap[key], linearView && enabled);
+      });
+      updateVisibleStats();
     }
 
     function setupControls() {
@@ -649,12 +952,11 @@ def _build_page_html(
         }
         control.checked = Boolean(latentInitialState[key]);
         control.addEventListener("change", () => {
-          setTraceVisible(key, control.checked);
-          updateVisibleStats();
+          applyVisibility();
         });
       });
       updateStaticStats();
-      updateVisibleStats();
+      applyVisibility();
     }
 
     if (document.readyState === "loading") {
@@ -669,6 +971,7 @@ def _build_page_html(
     return (
         template.replace("__PLOT_HTML__", plot_html)
         .replace("__TRACE_MAP_JSON__", json.dumps(trace_map, ensure_ascii=False))
+        .replace("__LINEAR_TRACE_MAP_JSON__", json.dumps(linear_trace_map, ensure_ascii=False))
         .replace("__STATS_JSON__", json.dumps(stats, ensure_ascii=False))
         .replace("__INITIAL_STATE_JSON__", json.dumps(initial_state, ensure_ascii=False))
     )

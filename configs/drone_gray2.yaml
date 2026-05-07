@@ -12,7 +12,7 @@ selection:
   distance_metric: l2
   include_endpoints: true
   local_refine_iterations: 3
-  local_refine_window: 12
+  local_refine_window: 30
 
 model:
   name: conv_autoencoder
@@ -45,11 +45,12 @@ train:
   device: auto
 
 output:
-  output_dir: artifacts/keyframe_selection/drone_gray2
+  output_dir: artifacts/keyframe_selection/drone_gray3
   selected_csv: selected_frames.csv
   selected_frame_dir: selected_frames
   uniform_frame_dir: uniform_frames
   frame_index_plot: frame_index_comparison.png
+  timeline_comparison_video: timeline_comparison.mp4
   latent_html: latent_space.html
   latent_npz: all_frame_latents.npz
   checkpoint: autoencoder.pt
@@ -70,4 +71,5 @@ visualization:
     show_selected_frames: true
     show_selected_labels: true
     show_candidate_order: false
+    show_linear_view: false
     candidate_order_every: 10

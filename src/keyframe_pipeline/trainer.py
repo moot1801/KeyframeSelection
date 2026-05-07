@@ -29,6 +29,17 @@ def train_autoencoder(
     optimizer = build_optimizer(model=model, config=optimizer_config)
     criterion = build_loss(loss_config)
     history: list[float] = []
+    print(
+        "  - training setup: "
+        f"model={model.__class__.__name__}, frames_shape={tuple(tensor_frames.shape)}, "
+        f"batch_size={dataloader.batch_size}, batches_per_epoch={len(dataloader)}, "
+        f"epochs={train_config.epochs}, device={device}"
+    )
+    print(
+        "  - training strategy: "
+        f"optimizer={optimizer.__class__.__name__}, loss={criterion.__class__.__name__}, "
+        f"learning_rate={optimizer_config.learning_rate}, weight_decay={optimizer_config.weight_decay}"
+    )
 
     model.train()
     for epoch in range(train_config.epochs):

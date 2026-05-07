@@ -96,27 +96,46 @@ def refine_selection_by_local_search(
     include_endpoints: bool,
 ) -> np.ndarray:
     if iterations == 0 or len(selected_candidate_orders) <= 2:
+        print(
+            "  - local refinement skipped: "
+            f"iterations={iterations}, selected_count={len(selected_candidate_orders)}"
+        )
         return selected_candidate_orders.copy()
 
     selected = selected_candidate_orders.astype(np.int32).copy()
     fixed_positions = {0, len(selected) - 1} if include_endpoints else set()
     current_objective = distance_variance(latents, selected)
+    print(
+        "  - local refinement setup: "
+        f"iterations={iterations}, window={window}, selected_count={len(selected)}, "
+        f"fixed_positions={sorted(fixed_positions)}, initial_variance={current_objective:.6f}"
+    )
 
-    for _ in range(iterations):
+    for iteration in range(iterations):
         changed = False
+        improvement_count = 0
+        checked_candidate_count = 0
+        iteration_start_objective = current_objective
         for position in range(len(selected)):
             if position in fixed_positions:
                 continue
 
+            original_index = int(selected[position])
             lower = int(selected[position - 1] + 1) if position > 0 else 0
             upper = int(selected[position + 1] - 1) if position < len(selected) - 1 else len(latents) - 1
             if lower > upper:
+                print(
+                    "  - local refinement position skipped: "
+                    f"iteration={iteration + 1}, position={position}, reason=empty_range"
+                )
                 continue
 
             if window > 0:
                 center = int(selected[position])
                 lower = max(lower, center - window)
                 upper = min(upper, center + window)
+            candidate_count = max(0, upper - lower)
+            checked_candidate_count += candidate_count
 
             best_index = int(selected[position])
             best_objective = current_objective
@@ -134,8 +153,23 @@ def refine_selection_by_local_search(
                 selected[position] = best_index
                 current_objective = best_objective
                 changed = True
+                improvement_count += 1
+                print(
+                    "  - local refinement improved: "
+                    f"iteration={iteration + 1}, position={position}, "
+                    f"candidate_order={original_index}->{best_index}, "
+                    f"variance={current_objective:.6f}, search_range={lower}-{upper}"
+                )
+
+        print(
+            "  - local refinement iteration summary: "
+            f"iteration={iteration + 1}/{iterations}, checked_candidates={checked_candidate_count}, "
+            f"improvements={improvement_count}, "
+            f"variance={iteration_start_objective:.6f}->{current_objective:.6f}"
+        )
 
         if not changed:
+            print(f"  - local refinement early stop: iteration={iteration + 1}, no_improvement=true")
             break
 
     return selected
@@ -145,13 +179,27 @@ class ArclengthLocalRefineSelectionStrategy(SelectionStrategy):
     name = "arclength_local_refine"
 
     def select(self, latents: np.ndarray, config: SelectionConfig) -> SelectionResult:
+        print(
+            "  - selection setup: "
+            f"latents_shape={latents.shape}, num_frames={config.num_frames}, "
+            f"distance_metric={config.distance_metric}, include_endpoints={config.include_endpoints}"
+        )
         cumulative = cumulative_path_distances(latents)
+        print(f"  - cumulative latent path length: {float(cumulative[-1]):.6f}")
         initial_selected = initial_selection_by_arclength(
             cumulative=cumulative,
             num_frames=config.num_frames,
             include_endpoints=config.include_endpoints,
         )
         initial_distances = selected_distances(latents, initial_selected)
+        print(
+            "  - initial selection: "
+            f"selected_count={len(initial_selected)}, "
+            f"first_candidate_order={int(initial_selected[0])}, "
+            f"last_candidate_order={int(initial_selected[-1])}, "
+            f"distance_mean={float(np.mean(initial_distances)) if len(initial_distances) else 0.0:.6f}, "
+            f"distance_variance={float(np.var(initial_distances)) if len(initial_distances) else 0.0:.6f}"
+        )
         final_selected = refine_selection_by_local_search(
             latents=latents,
             selected_candidate_orders=initial_selected,
@@ -160,6 +208,14 @@ class ArclengthLocalRefineSelectionStrategy(SelectionStrategy):
             include_endpoints=config.include_endpoints,
         )
         final_distances = selected_distances(latents, final_selected)
+        print(
+            "  - final selection: "
+            f"selected_count={len(final_selected)}, "
+            f"first_candidate_order={int(final_selected[0])}, "
+            f"last_candidate_order={int(final_selected[-1])}, "
+            f"distance_mean={float(np.mean(final_distances)) if len(final_distances) else 0.0:.6f}, "
+            f"distance_variance={float(np.var(final_distances)) if len(final_distances) else 0.0:.6f}"
+        )
         return SelectionResult(
             cumulative=cumulative,
             initial_selected=initial_selected,
