@@ -1,6 +1,6 @@
 video:
-  input_path: data/videos/Tino3.mp4
-  candidate_num_frames: 1000
+  input_path: data/videos/threeTake.mp4
+  candidate_num_frames: 600
   image_size: 64
   color_mode: grayscale # or rgb
 
@@ -8,10 +8,10 @@ selection:
   name: arclength_local_refine
   module: keyframe_pipeline.selectors.arclength_local_refine
   class_name: ArclengthLocalRefineSelectionStrategy
-  num_frames: 350
+  num_frames: 100
   distance_metric: l2
   include_endpoints: true
-  local_refine_iterations: 20
+  local_refine_iterations: 15
   local_refine_window: 30
 
 model:
@@ -45,7 +45,7 @@ train:
   device: auto
 
 output:
-  output_dir: artifacts/keyframe_selection/tino_gray
+  output_dir: artifacts/keyframe_selection/threeTake
   selected_csv: selected_frames.csv
   selected_frame_dir: selected_frames
   uniform_frame_dir: uniform_frames
