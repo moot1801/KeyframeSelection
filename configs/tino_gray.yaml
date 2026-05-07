@@ -2,22 +2,44 @@ video:
   input_path: data/videos/Tino3.mp4
   candidate_num_frames: 1000
   image_size: 64
-  color_mode: grayscale
+  color_mode: grayscale # or rgb
 
 selection:
-  num_frames: 400
+  name: arclength_local_refine
+  module: keyframe_pipeline.selectors.arclength_local_refine
+  class_name: ArclengthLocalRefineSelectionStrategy
+  num_frames: 350
   distance_metric: l2
   include_endpoints: true
-  local_refine_iterations: 3
-  local_refine_window: 12
+  local_refine_iterations: 20
+  local_refine_window: 30
 
 model:
+  name: conv_autoencoder
+  module: keyframe_pipeline.models.conv_autoencoder
+  class_name: ConvAutoEncoder
   latent_dim: 3
+  kwargs:
+    encoder_channels: [32, 64, 128, 256]
+    activation: relu
+    output_activation: sigmoid
+
+optimizer:
+  name: adam
+  module: keyframe_pipeline.optimizers.torch_optimizers
+  class_name: AdamOptimizerStrategy
+  learning_rate: 0.001
+  weight_decay: 0.0
+  momentum: 0.0
+
+loss:
+  name: mse
+  module: keyframe_pipeline.losses.basic
+  class_name: MSELossStrategy
 
 train:
   epochs: 200
   batch_size: 16
-  learning_rate: 0.001
   seed: 42
   num_workers: 0
   device: auto
@@ -35,7 +57,18 @@ output:
   save_selected_original_size: true
 
 visualization:
+  name: plotly_latent_controls
+  module: keyframe_pipeline.visualizers.plotly_latent_controls
+  class_name: PlotlyLatentControlsVisualizationStrategy
   dimensions: 3
   annotate_every: 5
   show_all_candidates: true
   show_selected_path: true
+  kwargs:
+    show_candidate_frames: true
+    show_selected_path: true
+    show_selected_frames: true
+    show_selected_labels: true
+    show_candidate_order: false
+    show_linear_view: false
+    candidate_order_every: 10

@@ -1,18 +1,18 @@
 video:
-  input_path: data/videos/Tino3.mp4
-  candidate_num_frames: 1000
+  input_path: data/videos/threeTake.mp4
+  candidate_num_frames: 600
   image_size: 64
-  color_mode: rgb
+  color_mode: grayscale # or rgb
 
 selection:
   name: arclength_local_refine
   module: keyframe_pipeline.selectors.arclength_local_refine
   class_name: ArclengthLocalRefineSelectionStrategy
-  num_frames: 400
+  num_frames: 100
   distance_metric: l2
   include_endpoints: true
-  local_refine_iterations: 3
-  local_refine_window: 12
+  local_refine_iterations: 15
+  local_refine_window: 30
 
 model:
   name: conv_autoencoder
@@ -45,7 +45,7 @@ train:
   device: auto
 
 output:
-  output_dir: artifacts/keyframe_selection/tino_rgb
+  output_dir: artifacts/keyframe_selection/threeTake
   selected_csv: selected_frames.csv
   selected_frame_dir: selected_frames
   uniform_frame_dir: uniform_frames
@@ -57,10 +57,18 @@ output:
   save_selected_original_size: true
 
 visualization:
-  name: plotly_latent
-  module: keyframe_pipeline.visualizers.plotly_latent
-  class_name: PlotlyLatentVisualizationStrategy
+  name: plotly_latent_controls
+  module: keyframe_pipeline.visualizers.plotly_latent_controls
+  class_name: PlotlyLatentControlsVisualizationStrategy
   dimensions: 3
   annotate_every: 5
   show_all_candidates: true
   show_selected_path: true
+  kwargs:
+    show_candidate_frames: true
+    show_selected_path: true
+    show_selected_frames: true
+    show_selected_labels: true
+    show_candidate_order: false
+    show_linear_view: false
+    candidate_order_every: 10
