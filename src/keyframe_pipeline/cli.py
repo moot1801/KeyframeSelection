@@ -154,7 +154,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
     )
     print(f"  - selected images saved: count={len(image_paths)}, dir={selected_image_dir}")
 
-    uniform_frame_indices = compute_sample_indices(total_frames, config.selection.num_frames)
+    uniform_frame_indices = compute_sample_indices(total_frames, len(final_selected))
     uniform_image_dir = output_dir / config.output.uniform_frame_dir
     export_selected_images(
         video_path=config.video.input_path,
@@ -200,6 +200,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         selected_timestamps_sec=selected_timestamps_sec,
         cumulative=selection_result.cumulative,
         distances=final_distances,
+        latents=latents,
         image_paths=image_paths,
     )
     print(f"  - selected frame CSV saved: {csv_path}")
@@ -228,6 +229,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         selection_result=selection_result,
         uniform_frame_indices=uniform_frame_indices,
         frame_indices=frame_indices,
+        latents=latents,
         config=config,
     )
     print(f"  - metrics JSON saved: {metrics_path}")

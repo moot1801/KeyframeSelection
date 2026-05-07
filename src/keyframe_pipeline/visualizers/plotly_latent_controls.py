@@ -6,11 +6,26 @@ from typing import Any
 
 import numpy as np
 
+from keyframe_pipeline.clustering import compute_selected_clusters
 from keyframe_pipeline.config import VisualizationConfig
 from keyframe_pipeline.visualizers.plotly_latent import (
     LatentVisualizationStrategy,
     ensure_plotly_available,
     project_latents,
+)
+
+
+CLUSTER_COLORS = (
+    "#dc2626",
+    "#2563eb",
+    "#16a34a",
+    "#9333ea",
+    "#ea580c",
+    "#0891b2",
+    "#be123c",
+    "#4f46e5",
+    "#65a30d",
+    "#c026d3",
 )
 
 
@@ -53,6 +68,10 @@ def _distance_stats(values: np.ndarray) -> dict[str, float | None]:
         "min": _finite_or_none(float(np.min(values))),
         "max": _finite_or_none(float(np.max(values))),
     }
+
+
+def _cluster_color(cluster_id: int) -> str:
+    return CLUSTER_COLORS[cluster_id % len(CLUSTER_COLORS)]
 
 
 def _linear_fractions(latents: np.ndarray) -> np.ndarray:
@@ -111,10 +130,27 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
         selected_frame_indices = frame_indices[selected_orders]
         selected_timestamps_sec = timestamps_sec[selected_orders]
 
+        selected_distances = np.linalg.norm(np.diff(latents[selected_orders], axis=0), axis=1)
+        cluster_info = compute_selected_clusters(
+            selected_distances.astype(np.float32),
+            latents=latents,
+            selected_candidate_orders=selected_orders,
+        )
+        selected_cluster_ids = cluster_info.cluster_ids
+        selected_cluster_colors = [_cluster_color(int(cluster_id)) for cluster_id in selected_cluster_ids]
+        candidate_cluster_ids = np.full(len(latents), -1, dtype=np.int32)
+        candidate_cluster_ids[selected_orders] = selected_cluster_ids
         selected_mask = np.zeros(len(latents), dtype=bool)
         selected_mask[selected_orders] = True
         custom_data = np.stack(
-            [candidate_orders, frame_indices, timestamps_sec, selected_mask.astype(np.int32), linear_fractions],
+            [
+                candidate_orders,
+                frame_indices,
+                timestamps_sec,
+                selected_mask.astype(np.int32),
+                linear_fractions,
+                candidate_cluster_ids,
+            ],
             axis=1,
         )
         selected_data = custom_data[selected_orders]
@@ -127,8 +163,13 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
         show_selected_path = _as_bool(kwargs.get("show_selected_path"), config.show_selected_path)
         show_selected_frames = _as_bool(kwargs.get("show_selected_frames"), True)
         show_selected_labels = _as_bool(kwargs.get("show_selected_labels"), config.annotate_every > 0)
+        show_cluster_endpoints = _as_bool(kwargs.get("show_cluster_endpoints"), True)
         show_candidate_order = _as_bool(kwargs.get("show_candidate_order"), False)
         show_linear_view = _as_bool(kwargs.get("show_linear_view"), False)
+        selected_marker_size = max(
+            2,
+            min(24, _as_int(kwargs.get("selected_marker_size"), 6 if config.dimensions == 3 else 8)),
+        )
         candidate_order_every = max(
             1,
             _as_int(kwargs.get("candidate_order_every"), max(1, len(latents) // 80)),
@@ -143,6 +184,27 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
         if len(candidate_orders) and candidate_label_orders[-1] != candidate_orders[-1]:
             candidate_label_orders = np.concatenate([candidate_label_orders, candidate_orders[-1:]])
 
+        cluster_start_positions: list[int] = []
+        cluster_end_positions: list[int] = []
+        cluster_start_texts: list[str] = []
+        cluster_end_texts: list[str] = []
+        for cluster_id in range(cluster_info.cluster_count):
+            cluster_positions = np.where(selected_cluster_ids == cluster_id)[0]
+            if len(cluster_positions) == 0:
+                continue
+            start_position = int(cluster_positions[0])
+            end_position = int(cluster_positions[-1])
+            cluster_start_positions.append(start_position)
+            if start_position == end_position:
+                cluster_start_texts.append(f"C{cluster_id} start/end")
+            else:
+                cluster_start_texts.append(f"C{cluster_id} start")
+                cluster_end_positions.append(end_position)
+                cluster_end_texts.append(f"C{cluster_id} end")
+        cluster_start_colors = [_cluster_color(int(selected_cluster_ids[position])) for position in cluster_start_positions]
+        cluster_end_colors = [_cluster_color(int(selected_cluster_ids[position])) for position in cluster_end_positions]
+        cluster_endpoint_count = len(cluster_start_positions) + len(cluster_end_positions)
+
         traces: list[object] = []
         trace_map: dict[str, list[int]] = {}
         linear_trace_map: dict[str, list[int]] = {}
@@ -154,6 +216,76 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
         def add_linear_trace(name: str, trace: object) -> None:
             linear_trace_map.setdefault(name, []).append(len(traces))
             traces.append(trace)
+
+        def add_cluster_endpoint_traces(
+            add_fn: object,
+            scatter_class: object,
+            endpoint_coords: np.ndarray,
+            visible: bool,
+            prefix: str,
+        ) -> None:
+            is_3d = endpoint_coords.shape[1] >= 3
+
+            def add_endpoint_trace(
+                positions: list[int],
+                labels: list[str],
+                colors: list[str],
+                role: str,
+                line_color: str,
+            ) -> None:
+                if len(positions) == 0:
+                    return
+                endpoint_positions = np.asarray(positions, dtype=np.int32)
+                trace_kwargs = {
+                    "x": endpoint_coords[endpoint_positions, 0],
+                    "y": endpoint_coords[endpoint_positions, 1],
+                    "mode": "markers+text",
+                    "name": f"{prefix} {role}",
+                    "visible": visible,
+                    "marker": {
+                        "size": selected_marker_size + 5,
+                        "color": colors,
+                        "line": {"color": line_color, "width": 3},
+                    },
+                    "text": labels,
+                    "textfont": {"color": "#0f172a", "size": 12},
+                    "textposition": "bottom center" if role == "starts" else "top center",
+                    "customdata": selected_data[endpoint_positions],
+                    "hovertemplate": (
+                        f"{prefix} {role}<br>"
+                        "cluster_id=%{customdata[5]}<br>"
+                        "candidate_order=%{customdata[0]}<br>"
+                        "frame_idx=%{customdata[1]}<br>"
+                        "time=%{customdata[2]:.3f}s<extra></extra>"
+                    ),
+                }
+                if is_3d:
+                    trace_kwargs["z"] = endpoint_coords[endpoint_positions, 2]
+                add_fn("cluster_endpoints", scatter_class(**trace_kwargs))
+
+            add_endpoint_trace(cluster_start_positions, cluster_start_texts, cluster_start_colors, "starts", "#22c55e")
+            add_endpoint_trace(cluster_end_positions, cluster_end_texts, cluster_end_colors, "ends", "#0f172a")
+
+        def add_search_result_trace(add_fn: object, scatter_class: object, is_3d: bool, prefix: str) -> None:
+            trace_kwargs = {
+                "x": [],
+                "y": [],
+                "mode": "markers+text",
+                "name": f"{prefix} search result",
+                "visible": False,
+                "marker": {
+                    "size": selected_marker_size + 8,
+                    "color": "#facc15",
+                    "line": {"color": "#111827", "width": 4},
+                },
+                "text": [],
+                "textfont": {"color": "#111827", "size": 13},
+                "textposition": "middle right",
+                "hovertemplate": "%{text}<extra></extra>",
+            }
+            if is_3d:
+                trace_kwargs["z"] = []
+            add_fn("search_result", scatter_class(**trace_kwargs))
 
         if config.dimensions == 3:
             add_trace(
@@ -182,25 +314,30 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                     ),
                 ),
             )
-            add_trace(
-                "selected_path",
-                go.Scatter3d(
-                    x=selected_coords[:, 0],
-                    y=selected_coords[:, 1],
-                    z=selected_coords[:, 2],
-                    mode="lines",
-                    name="selected path",
-                    visible=show_selected_path,
-                    line={"color": "#dc2626", "width": 6},
-                    customdata=selected_data,
-                    hovertemplate=(
-                        "candidate_order=%{customdata[0]}<br>"
-                        "frame_idx=%{customdata[1]}<br>"
-                        "time=%{customdata[2]:.3f}s<br>"
-                        "z1=%{x:.4f}<br>z2=%{y:.4f}<br>z3=%{z:.4f}<extra></extra>"
+            for cluster_id in range(cluster_info.cluster_count):
+                cluster_positions = np.where(selected_cluster_ids == cluster_id)[0]
+                if len(cluster_positions) < 2:
+                    continue
+                add_trace(
+                    "selected_path",
+                    go.Scatter3d(
+                        x=selected_coords[cluster_positions, 0],
+                        y=selected_coords[cluster_positions, 1],
+                        z=selected_coords[cluster_positions, 2],
+                        mode="lines",
+                        name=f"selected path cluster {cluster_id}",
+                        visible=show_selected_path,
+                        line={"color": _cluster_color(cluster_id), "width": 6},
+                        customdata=selected_data[cluster_positions],
+                        hovertemplate=(
+                            f"cluster_id={cluster_id}<br>"
+                            "candidate_order=%{customdata[0]}<br>"
+                            "frame_idx=%{customdata[1]}<br>"
+                            "time=%{customdata[2]:.3f}s<br>"
+                            "z1=%{x:.4f}<br>z2=%{y:.4f}<br>z3=%{z:.4f}<extra></extra>"
+                        ),
                     ),
-                ),
-            )
+                )
             add_trace(
                 "selected_frames",
                 go.Scatter3d(
@@ -211,19 +348,27 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                     name="selected frames",
                     visible=show_selected_frames,
                     marker={
-                        "size": 6,
-                        "color": "#f97316",
+                        "size": selected_marker_size,
+                        "color": selected_cluster_colors,
                         "line": {"color": "#7f1d1d", "width": 2},
                     },
                     customdata=selected_data,
                     hovertemplate=(
                         "selection_order=%{pointNumber}<br>"
+                        "cluster_id=%{customdata[5]}<br>"
                         "candidate_order=%{customdata[0]}<br>"
                         "frame_idx=%{customdata[1]}<br>"
                         "time=%{customdata[2]:.3f}s<br>"
                         "z1=%{x:.4f}<br>z2=%{y:.4f}<br>z3=%{z:.4f}<extra></extra>"
                     ),
                 ),
+            )
+            add_cluster_endpoint_traces(
+                add_trace,
+                go.Scatter3d,
+                selected_coords,
+                show_cluster_endpoints,
+                "cluster",
             )
             add_trace(
                 "selected_labels",
@@ -235,9 +380,15 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                     name="selected labels",
                     visible=show_selected_labels,
                     text=[
-                        f"S{order}:F{int(frame_indices[candidate_order])}"
+                        f"C{int(candidate_cluster_ids[candidate_order])} S{order}:F{int(frame_indices[candidate_order])}"
                         for order, candidate_order in zip(selected_label_positions, selected_label_orders)
                     ],
+                    textfont={
+                        "color": [
+                            _cluster_color(int(candidate_cluster_ids[candidate_order]))
+                            for candidate_order in selected_label_orders
+                        ]
+                    },
                     textposition="top center",
                     hoverinfo="skip",
                 ),
@@ -256,6 +407,7 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                     hoverinfo="skip",
                 ),
             )
+            add_search_result_trace(add_trace, go.Scatter3d, True, "latent")
             if len(linear_coords):
                 linear_endpoints = linear_coords[[0, -1]]
                 add_linear_trace(
@@ -297,26 +449,31 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                         ),
                     ),
                 )
-                add_linear_trace(
-                    "selected_path",
-                    go.Scatter3d(
-                        x=selected_linear_coords[:, 0],
-                        y=selected_linear_coords[:, 1],
-                        z=selected_linear_coords[:, 2],
-                        mode="lines",
-                        name="linear selected path",
-                        visible=show_linear_view and show_selected_path,
-                        line={"color": "#dc2626", "width": 5},
-                        customdata=selected_data,
-                        hovertemplate=(
-                            "linear selected path<br>"
-                            "candidate_order=%{customdata[0]}<br>"
-                            "frame_idx=%{customdata[1]}<br>"
-                            "time=%{customdata[2]:.3f}s<br>"
-                            "linear_position=%{customdata[4]:.4f}<extra></extra>"
+                for cluster_id in range(cluster_info.cluster_count):
+                    cluster_positions = np.where(selected_cluster_ids == cluster_id)[0]
+                    if len(cluster_positions) < 2:
+                        continue
+                    add_linear_trace(
+                        "selected_path",
+                        go.Scatter3d(
+                            x=selected_linear_coords[cluster_positions, 0],
+                            y=selected_linear_coords[cluster_positions, 1],
+                            z=selected_linear_coords[cluster_positions, 2],
+                            mode="lines",
+                            name=f"linear selected path cluster {cluster_id}",
+                            visible=show_linear_view and show_selected_path,
+                            line={"color": _cluster_color(cluster_id), "width": 5},
+                            customdata=selected_data[cluster_positions],
+                            hovertemplate=(
+                                "linear selected path<br>"
+                                f"cluster_id={cluster_id}<br>"
+                                "candidate_order=%{customdata[0]}<br>"
+                                "frame_idx=%{customdata[1]}<br>"
+                                "time=%{customdata[2]:.3f}s<br>"
+                                "linear_position=%{customdata[4]:.4f}<extra></extra>"
+                            ),
                         ),
-                    ),
-                )
+                    )
                 add_linear_trace(
                     "selected_frames",
                     go.Scatter3d(
@@ -327,20 +484,28 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                         name="linear selected frames",
                         visible=show_linear_view and show_selected_frames,
                         marker={
-                            "size": 6,
-                            "color": "#f97316",
+                            "size": selected_marker_size,
+                            "color": selected_cluster_colors,
                             "line": {"color": "#7f1d1d", "width": 2},
                         },
                         customdata=selected_data,
                         hovertemplate=(
                             "linear selected frame<br>"
                             "selection_order=%{pointNumber}<br>"
+                            "cluster_id=%{customdata[5]}<br>"
                             "candidate_order=%{customdata[0]}<br>"
                             "frame_idx=%{customdata[1]}<br>"
                             "time=%{customdata[2]:.3f}s<br>"
                             "linear_position=%{customdata[4]:.4f}<extra></extra>"
                         ),
                     ),
+                )
+                add_cluster_endpoint_traces(
+                    add_linear_trace,
+                    go.Scatter3d,
+                    selected_linear_coords,
+                    show_linear_view and show_cluster_endpoints,
+                    "linear cluster",
                 )
                 add_linear_trace(
                     "selected_labels",
@@ -352,9 +517,15 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                         name="linear selected labels",
                         visible=show_linear_view and show_selected_labels,
                         text=[
-                            f"S{order}:F{int(frame_indices[candidate_order])}"
+                            f"C{int(candidate_cluster_ids[candidate_order])} S{order}:F{int(frame_indices[candidate_order])}"
                             for order, candidate_order in zip(selected_label_positions, selected_label_orders)
                         ],
+                        textfont={
+                            "color": [
+                                _cluster_color(int(candidate_cluster_ids[candidate_order]))
+                                for candidate_order in selected_label_orders
+                            ]
+                        },
                         textposition="top center",
                         hoverinfo="skip",
                     ),
@@ -373,6 +544,7 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                         hoverinfo="skip",
                     ),
                 )
+                add_search_result_trace(add_linear_trace, go.Scatter3d, True, "linear")
             fig = go.Figure(data=traces)
             fig.update_layout(
                 title="Latent Space Keyframe Selection",
@@ -412,24 +584,29 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                     ),
                 ),
             )
-            add_trace(
-                "selected_path",
-                go.Scatter(
-                    x=selected_coords[:, 0],
-                    y=selected_coords[:, 1],
-                    mode="lines",
-                    name="selected path",
-                    visible=show_selected_path,
-                    line={"color": "#dc2626", "width": 3},
-                    customdata=selected_data,
-                    hovertemplate=(
-                        "candidate_order=%{customdata[0]}<br>"
-                        "frame_idx=%{customdata[1]}<br>"
-                        "time=%{customdata[2]:.3f}s<br>"
-                        "z1=%{x:.4f}<br>z2=%{y:.4f}<extra></extra>"
+            for cluster_id in range(cluster_info.cluster_count):
+                cluster_positions = np.where(selected_cluster_ids == cluster_id)[0]
+                if len(cluster_positions) < 2:
+                    continue
+                add_trace(
+                    "selected_path",
+                    go.Scatter(
+                        x=selected_coords[cluster_positions, 0],
+                        y=selected_coords[cluster_positions, 1],
+                        mode="lines",
+                        name=f"selected path cluster {cluster_id}",
+                        visible=show_selected_path,
+                        line={"color": _cluster_color(cluster_id), "width": 3},
+                        customdata=selected_data[cluster_positions],
+                        hovertemplate=(
+                            f"cluster_id={cluster_id}<br>"
+                            "candidate_order=%{customdata[0]}<br>"
+                            "frame_idx=%{customdata[1]}<br>"
+                            "time=%{customdata[2]:.3f}s<br>"
+                            "z1=%{x:.4f}<br>z2=%{y:.4f}<extra></extra>"
+                        ),
                     ),
-                ),
-            )
+                )
             add_trace(
                 "selected_frames",
                 go.Scatter(
@@ -439,19 +616,27 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                     name="selected frames",
                     visible=show_selected_frames,
                     marker={
-                        "size": 8,
-                        "color": "#f97316",
+                        "size": selected_marker_size,
+                        "color": selected_cluster_colors,
                         "line": {"color": "#7f1d1d", "width": 1},
                     },
                     customdata=selected_data,
                     hovertemplate=(
                         "selection_order=%{pointNumber}<br>"
+                        "cluster_id=%{customdata[5]}<br>"
                         "candidate_order=%{customdata[0]}<br>"
                         "frame_idx=%{customdata[1]}<br>"
                         "time=%{customdata[2]:.3f}s<br>"
                         "z1=%{x:.4f}<br>z2=%{y:.4f}<extra></extra>"
                     ),
                 ),
+            )
+            add_cluster_endpoint_traces(
+                add_trace,
+                go.Scatter,
+                selected_coords,
+                show_cluster_endpoints,
+                "cluster",
             )
             add_trace(
                 "selected_labels",
@@ -462,9 +647,15 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                     name="selected labels",
                     visible=show_selected_labels,
                     text=[
-                        f"S{order}:F{int(frame_indices[candidate_order])}"
+                        f"C{int(candidate_cluster_ids[candidate_order])} S{order}:F{int(frame_indices[candidate_order])}"
                         for order, candidate_order in zip(selected_label_positions, selected_label_orders)
                     ],
+                    textfont={
+                        "color": [
+                            _cluster_color(int(candidate_cluster_ids[candidate_order]))
+                            for candidate_order in selected_label_orders
+                        ]
+                    },
                     textposition="top center",
                     hoverinfo="skip",
                 ),
@@ -482,6 +673,7 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                     hoverinfo="skip",
                 ),
             )
+            add_search_result_trace(add_trace, go.Scatter, False, "latent")
             if len(linear_coords):
                 linear_endpoints = linear_coords[[0, -1]]
                 add_linear_trace(
@@ -521,25 +713,30 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                         ),
                     ),
                 )
-                add_linear_trace(
-                    "selected_path",
-                    go.Scatter(
-                        x=selected_linear_coords[:, 0],
-                        y=selected_linear_coords[:, 1],
-                        mode="lines",
-                        name="linear selected path",
-                        visible=show_linear_view and show_selected_path,
-                        line={"color": "#dc2626", "width": 3},
-                        customdata=selected_data,
-                        hovertemplate=(
-                            "linear selected path<br>"
-                            "candidate_order=%{customdata[0]}<br>"
-                            "frame_idx=%{customdata[1]}<br>"
-                            "time=%{customdata[2]:.3f}s<br>"
-                            "linear_position=%{customdata[4]:.4f}<extra></extra>"
+                for cluster_id in range(cluster_info.cluster_count):
+                    cluster_positions = np.where(selected_cluster_ids == cluster_id)[0]
+                    if len(cluster_positions) < 2:
+                        continue
+                    add_linear_trace(
+                        "selected_path",
+                        go.Scatter(
+                            x=selected_linear_coords[cluster_positions, 0],
+                            y=selected_linear_coords[cluster_positions, 1],
+                            mode="lines",
+                            name=f"linear selected path cluster {cluster_id}",
+                            visible=show_linear_view and show_selected_path,
+                            line={"color": _cluster_color(cluster_id), "width": 3},
+                            customdata=selected_data[cluster_positions],
+                            hovertemplate=(
+                                "linear selected path<br>"
+                                f"cluster_id={cluster_id}<br>"
+                                "candidate_order=%{customdata[0]}<br>"
+                                "frame_idx=%{customdata[1]}<br>"
+                                "time=%{customdata[2]:.3f}s<br>"
+                                "linear_position=%{customdata[4]:.4f}<extra></extra>"
+                            ),
                         ),
-                    ),
-                )
+                    )
                 add_linear_trace(
                     "selected_frames",
                     go.Scatter(
@@ -549,20 +746,28 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                         name="linear selected frames",
                         visible=show_linear_view and show_selected_frames,
                         marker={
-                            "size": 8,
-                            "color": "#f97316",
+                            "size": selected_marker_size,
+                            "color": selected_cluster_colors,
                             "line": {"color": "#7f1d1d", "width": 1},
                         },
                         customdata=selected_data,
                         hovertemplate=(
                             "linear selected frame<br>"
                             "selection_order=%{pointNumber}<br>"
+                            "cluster_id=%{customdata[5]}<br>"
                             "candidate_order=%{customdata[0]}<br>"
                             "frame_idx=%{customdata[1]}<br>"
                             "time=%{customdata[2]:.3f}s<br>"
                             "linear_position=%{customdata[4]:.4f}<extra></extra>"
                         ),
                     ),
+                )
+                add_cluster_endpoint_traces(
+                    add_linear_trace,
+                    go.Scatter,
+                    selected_linear_coords,
+                    show_linear_view and show_cluster_endpoints,
+                    "linear cluster",
                 )
                 add_linear_trace(
                     "selected_labels",
@@ -573,9 +778,15 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                         name="linear selected labels",
                         visible=show_linear_view and show_selected_labels,
                         text=[
-                            f"S{order}:F{int(frame_indices[candidate_order])}"
+                            f"C{int(candidate_cluster_ids[candidate_order])} S{order}:F{int(frame_indices[candidate_order])}"
                             for order, candidate_order in zip(selected_label_positions, selected_label_orders)
                         ],
+                        textfont={
+                            "color": [
+                                _cluster_color(int(candidate_cluster_ids[candidate_order]))
+                                for candidate_order in selected_label_orders
+                            ]
+                        },
                         textposition="top center",
                         hoverinfo="skip",
                     ),
@@ -593,6 +804,7 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
                         hoverinfo="skip",
                     ),
                 )
+                add_search_result_trace(add_linear_trace, go.Scatter, False, "linear")
             fig = go.Figure(data=traces)
             fig.update_layout(
                 title="Latent Space Keyframe Selection",
@@ -609,8 +821,28 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
             "selected_count": int(len(selected_orders)),
             "candidate_order_label_count": int(len(candidate_label_orders)),
             "selected_label_count": int(len(selected_label_orders)),
+            "selected_marker_size": int(selected_marker_size),
             "selected_distance_count": int(len(selected_distances)),
             "selected_distance": _distance_stats(selected_distances),
+            "selected_cluster_method": "robust selected + candidate context",
+            "selected_cluster_global_threshold": float(cluster_info.threshold),
+            "selected_cluster_local_window": int(cluster_info.local_window),
+            "selected_cluster_local_mad_multiplier": float(cluster_info.local_mad_multiplier),
+            "selected_cluster_global_percentile": float(cluster_info.global_percentile),
+            "selected_cluster_min_distance_ratio": float(cluster_info.min_distance_ratio),
+            "selected_cluster_min_cluster_size": int(cluster_info.min_cluster_size),
+            "selected_cluster_candidate_context_window": int(cluster_info.candidate_context_window),
+            "selected_cluster_candidate_mad_multiplier": float(cluster_info.candidate_mad_multiplier),
+            "selected_cluster_candidate_distance_ratio": float(cluster_info.candidate_distance_ratio),
+            "selected_cluster_effective_threshold": _distance_stats(cluster_info.effective_thresholds),
+            "selected_cluster_candidate_distance_ratio_stats": _distance_stats(
+                cluster_info.candidate_distance_ratios
+            ),
+            "selected_cluster_selected_boundary_count": int(np.sum(cluster_info.selected_boundary_mask)),
+            "selected_cluster_candidate_boundary_count": int(np.sum(cluster_info.candidate_boundary_mask)),
+            "selected_cluster_boundary_count": int(np.sum(cluster_info.boundary_mask)),
+            "selected_cluster_count": int(cluster_info.cluster_count),
+            "selected_cluster_endpoint_count": int(cluster_endpoint_count),
             "candidate_order_min": int(candidate_orders[0]) if len(candidate_orders) else None,
             "candidate_order_max": int(candidate_orders[-1]) if len(candidate_orders) else None,
             "frame_index_min": int(frame_indices[0]) if len(frame_indices) else None,
@@ -625,6 +857,9 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
             "selected_time_max_sec": _finite_or_none(float(np.max(selected_timestamps_sec)))
             if len(selected_timestamps_sec)
             else None,
+            "search_candidate_frame_indices": frame_indices.astype(int).tolist(),
+            "search_selected_candidate_orders": selected_orders.astype(int).tolist(),
+            "search_selected_frame_indices": selected_frame_indices.astype(int).tolist(),
         }
         initial_state = {
             "linear_view": show_linear_view,
@@ -632,6 +867,7 @@ class PlotlyLatentControlsVisualizationStrategy(LatentVisualizationStrategy):
             "selected_path": show_selected_path,
             "selected_frames": show_selected_frames,
             "selected_labels": show_selected_labels,
+            "cluster_endpoints": show_cluster_endpoints,
             "candidate_order": show_candidate_order,
         }
 
@@ -716,6 +952,45 @@ def _build_page_html(
       height: 16px;
       accent-color: #2563eb;
     }
+    .range-control,
+    .search-control {
+      display: grid;
+      gap: 8px;
+      margin: 8px 0;
+      font-size: 14px;
+    }
+    .range-control input,
+    .search-control input,
+    .search-control select {
+      width: 100%;
+      box-sizing: border-box;
+      font: inherit;
+    }
+    .search-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 72px 64px;
+      gap: 6px;
+    }
+    .search-row button,
+    .search-control > button {
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: #0f172a;
+      font: inherit;
+      cursor: pointer;
+      padding: 5px 8px;
+    }
+    .search-row button:hover,
+    .search-control > button:hover {
+      background: #eaf1ff;
+      border-color: #93b4ef;
+    }
+    .search-status {
+      min-height: 18px;
+      color: #475569;
+      font-size: 12px;
+      line-height: 1.4;
+    }
     .stats-table {
       width: 100%;
       border-collapse: collapse;
@@ -773,7 +1048,29 @@ def _build_page_html(
       <label class="control"><input id="toggle-selected-path" type="checkbox"> Selected path</label>
       <label class="control"><input id="toggle-selected-frames" type="checkbox"> Selected frames</label>
       <label class="control"><input id="toggle-selected-labels" type="checkbox"> Selected labels</label>
+      <label class="control"><input id="toggle-cluster-endpoints" type="checkbox"> Cluster endpoints</label>
       <label class="control"><input id="toggle-candidate-order" type="checkbox"> Candidate order</label>
+
+      <h2>Style</h2>
+      <label class="range-control">
+        <span>Selected point size <strong id="selected-marker-size-value"></strong></span>
+        <input id="selected-marker-size" type="range" min="2" max="24" step="1">
+      </label>
+
+      <h2>Find</h2>
+      <div class="search-control">
+        <div class="search-row">
+          <select id="search-kind">
+            <option value="candidate_order">Candidate order</option>
+            <option value="frame_index">Frame index</option>
+            <option value="selection_order">Selection order</option>
+          </select>
+          <input id="search-value" type="number" min="0" step="1">
+          <button id="search-button" type="button">Find</button>
+        </div>
+        <button id="search-clear-button" type="button">Clear</button>
+        <div id="search-status" class="search-status"></div>
+      </div>
 
       <h2>Visible</h2>
       <table class="stats-table">
@@ -790,6 +1087,21 @@ def _build_page_html(
         <tbody>
           <tr><th>Candidate frames</th><td id="candidate-count"></td></tr>
           <tr><th>Selected frames</th><td id="selected-count"></td></tr>
+          <tr><th>Selected clusters</th><td id="selected-cluster-count"></td></tr>
+          <tr><th>Cluster method</th><td id="selected-cluster-method"></td></tr>
+          <tr><th>Local window</th><td id="selected-cluster-local-window"></td></tr>
+          <tr><th>MAD multiplier</th><td id="selected-cluster-local-mad-multiplier"></td></tr>
+          <tr><th>Global percentile</th><td id="selected-cluster-global-percentile"></td></tr>
+          <tr><th>Distance ratio</th><td id="selected-cluster-min-distance-ratio"></td></tr>
+          <tr><th>Min cluster size</th><td id="selected-cluster-min-cluster-size"></td></tr>
+          <tr><th>Candidate window</th><td id="selected-cluster-candidate-context-window"></td></tr>
+          <tr><th>Candidate ratio</th><td id="selected-cluster-candidate-distance-ratio"></td></tr>
+          <tr><th>Candidate ratio range</th><td id="selected-cluster-candidate-distance-ratio-range"></td></tr>
+          <tr><th>Selected-only candidates</th><td id="selected-cluster-selected-boundary-count"></td></tr>
+          <tr><th>Boundary candidates</th><td id="selected-cluster-candidate-boundary-count"></td></tr>
+          <tr><th>Final boundaries</th><td id="selected-cluster-boundary-count"></td></tr>
+          <tr><th>Global threshold</th><td id="selected-cluster-global-threshold"></td></tr>
+          <tr><th>Effective threshold range</th><td id="selected-cluster-effective-threshold-range"></td></tr>
           <tr><th>Distance segments</th><td id="distance-count"></td></tr>
           <tr><th>Distance mean</th><td id="distance-mean"></td></tr>
           <tr><th>Distance variance</th><td id="distance-variance"></td></tr>
@@ -821,8 +1133,10 @@ def _build_page_html(
       "selected_path",
       "selected_frames",
       "selected_labels",
+      "cluster_endpoints",
       "candidate_order"
     ];
+    let currentSearchResult = null;
 
     function getPlot() {
       return document.querySelector(".plotly-graph-div");
@@ -835,6 +1149,7 @@ def _build_page_html(
         selected_path: "toggle-selected-path",
         selected_frames: "toggle-selected-frames",
         selected_labels: "toggle-selected-labels",
+        cluster_endpoints: "toggle-cluster-endpoints",
         candidate_order: "toggle-candidate-order"
       };
       return document.getElementById(ids[key]);
@@ -873,11 +1188,13 @@ def _build_page_html(
       const candidateFrames = getControl("candidate_frames").checked;
       const selectedFrames = getControl("selected_frames").checked;
       const selectedLabels = getControl("selected_labels").checked;
+      const clusterEndpoints = getControl("cluster_endpoints").checked;
       const candidateOrder = getControl("candidate_order").checked;
 
       const visibleFramePoints = (
         (candidateFrames ? latentStats.candidate_count : 0) +
-        (selectedFrames ? latentStats.selected_count : 0)
+        (selectedFrames ? latentStats.selected_count : 0) +
+        (clusterEndpoints ? latentStats.selected_cluster_endpoint_count : 0)
       );
 
       setText("visible-linear-view", linearView ? "on" : "off");
@@ -896,6 +1213,35 @@ def _build_page_html(
       const distance = latentStats.selected_distance;
       setText("candidate-count", formatInteger(latentStats.candidate_count));
       setText("selected-count", formatInteger(latentStats.selected_count));
+      setText("selected-cluster-count", formatInteger(latentStats.selected_cluster_count));
+      setText("selected-cluster-method", latentStats.selected_cluster_method);
+      setText("selected-cluster-local-window", formatInteger(latentStats.selected_cluster_local_window));
+      setText("selected-cluster-local-mad-multiplier", formatFloat(latentStats.selected_cluster_local_mad_multiplier));
+      setText("selected-cluster-global-percentile", formatFloat(latentStats.selected_cluster_global_percentile));
+      setText("selected-cluster-min-distance-ratio", formatFloat(latentStats.selected_cluster_min_distance_ratio));
+      setText("selected-cluster-min-cluster-size", formatInteger(latentStats.selected_cluster_min_cluster_size));
+      setText("selected-cluster-candidate-context-window", formatInteger(latentStats.selected_cluster_candidate_context_window));
+      setText("selected-cluster-candidate-distance-ratio", formatFloat(latentStats.selected_cluster_candidate_distance_ratio));
+      setText(
+        "selected-cluster-candidate-distance-ratio-range",
+        formatRange(
+          latentStats.selected_cluster_candidate_distance_ratio_stats.min,
+          latentStats.selected_cluster_candidate_distance_ratio_stats.max,
+          formatFloat
+        )
+      );
+      setText("selected-cluster-selected-boundary-count", formatInteger(latentStats.selected_cluster_selected_boundary_count));
+      setText("selected-cluster-candidate-boundary-count", formatInteger(latentStats.selected_cluster_candidate_boundary_count));
+      setText("selected-cluster-boundary-count", formatInteger(latentStats.selected_cluster_boundary_count));
+      setText("selected-cluster-global-threshold", formatFloat(latentStats.selected_cluster_global_threshold));
+      setText(
+        "selected-cluster-effective-threshold-range",
+        formatRange(
+          latentStats.selected_cluster_effective_threshold.min,
+          latentStats.selected_cluster_effective_threshold.max,
+          formatFloat
+        )
+      );
       setText("distance-count", formatInteger(latentStats.selected_distance_count));
       setText("distance-mean", formatFloat(distance.mean));
       setText("distance-variance", formatFloat(distance.variance));
@@ -933,6 +1279,140 @@ def _build_page_html(
       Plotly.restyle(plot, {visible}, traceIndices);
     }
 
+    function setTraceMarkerSize(indices, size) {
+      const plot = getPlot();
+      if (!plot || indices === undefined || !window.Plotly) {
+        return;
+      }
+      const traceIndices = Array.isArray(indices) ? indices : [indices];
+      if (traceIndices.length === 0) {
+        return;
+      }
+      Plotly.restyle(plot, {"marker.size": Number(size)}, traceIndices);
+    }
+
+    function combinedTraceIndices(key) {
+      return [
+        ...(latentTraceMap[key] || []),
+        ...(latentLinearTraceMap[key] || [])
+      ];
+    }
+
+    function applySelectedMarkerSize() {
+      const control = document.getElementById("selected-marker-size");
+      if (!control) {
+        return;
+      }
+      const size = Number(control.value);
+      setText("selected-marker-size-value", formatInteger(size));
+      setTraceMarkerSize(combinedTraceIndices("selected_frames"), size);
+      setTraceMarkerSize(combinedTraceIndices("cluster_endpoints"), size + 5);
+      setTraceMarkerSize(combinedTraceIndices("search_result"), size + 8);
+    }
+
+    function getActiveCandidateTrace() {
+      const linearView = getControl("linear_view").checked;
+      const map = linearView ? latentLinearTraceMap : latentTraceMap;
+      const traceIndex = map.candidate_frames && map.candidate_frames[0];
+      const plot = getPlot();
+      if (!plot || traceIndex === undefined) {
+        return null;
+      }
+      return plot.data[traceIndex];
+    }
+
+    function findCandidateOrder(kind, rawValue) {
+      const value = Number(rawValue);
+      if (!Number.isInteger(value)) {
+        return null;
+      }
+      if (kind === "candidate_order") {
+        return value >= 0 && value < latentStats.candidate_count ? value : null;
+      }
+      if (kind === "frame_index") {
+        const order = latentStats.search_candidate_frame_indices.indexOf(value);
+        return order >= 0 ? order : null;
+      }
+      if (kind === "selection_order") {
+        if (value < 0 || value >= latentStats.selected_count) {
+          return null;
+        }
+        return latentStats.search_selected_candidate_orders[value];
+      }
+      return null;
+    }
+
+    function describeSearchResult(candidateOrder) {
+      const frameIndex = latentStats.search_candidate_frame_indices[candidateOrder];
+      const selectionOrder = latentStats.search_selected_candidate_orders.indexOf(candidateOrder);
+      if (selectionOrder >= 0) {
+        return `candidate ${candidateOrder}, frame ${frameIndex}, selected ${selectionOrder}`;
+      }
+      return `candidate ${candidateOrder}, frame ${frameIndex}`;
+    }
+
+    function clearSearchResult() {
+      currentSearchResult = null;
+      setTraceIndicesVisible(latentTraceMap.search_result, false);
+      setTraceIndicesVisible(latentLinearTraceMap.search_result, false);
+      const status = document.getElementById("search-status");
+      if (status) {
+        status.textContent = "";
+      }
+    }
+
+    function renderSearchResult() {
+      const plot = getPlot();
+      if (!plot || !window.Plotly) {
+        return;
+      }
+      setTraceIndicesVisible(latentTraceMap.search_result, false);
+      setTraceIndicesVisible(latentLinearTraceMap.search_result, false);
+      if (!currentSearchResult) {
+        return;
+      }
+      const linearView = getControl("linear_view").checked;
+      const sourceTrace = getActiveCandidateTrace();
+      const targetMap = linearView ? latentLinearTraceMap : latentTraceMap;
+      const searchTraceIndices = targetMap.search_result || [];
+      if (!sourceTrace || searchTraceIndices.length === 0) {
+        return;
+      }
+      const candidateOrder = currentSearchResult.candidateOrder;
+      const x = sourceTrace.x[candidateOrder];
+      const y = sourceTrace.y[candidateOrder];
+      const update = {
+        x: [[x]],
+        y: [[y]],
+        text: [[currentSearchResult.label]],
+        visible: true
+      };
+      if (sourceTrace.z) {
+        update.z = [[sourceTrace.z[candidateOrder]]];
+      }
+      Plotly.restyle(plot, update, searchTraceIndices);
+    }
+
+    function runSearch() {
+      const kind = document.getElementById("search-kind").value;
+      const value = document.getElementById("search-value").value;
+      const candidateOrder = findCandidateOrder(kind, value);
+      const status = document.getElementById("search-status");
+      if (candidateOrder === null) {
+        clearSearchResult();
+        if (status) {
+          status.textContent = "No matching node";
+        }
+        return;
+      }
+      const label = describeSearchResult(candidateOrder);
+      currentSearchResult = {candidateOrder, label};
+      if (status) {
+        status.textContent = label;
+      }
+      renderSearchResult();
+    }
+
     function applyVisibility() {
       const linearView = getControl("linear_view").checked;
       setTraceIndicesVisible(latentLinearTraceMap.linear_view, linearView);
@@ -941,6 +1421,7 @@ def _build_page_html(
         setTraceIndicesVisible(latentTraceMap[key], !linearView && enabled);
         setTraceIndicesVisible(latentLinearTraceMap[key], linearView && enabled);
       });
+      renderSearchResult();
       updateVisibleStats();
     }
 
@@ -955,7 +1436,31 @@ def _build_page_html(
           applyVisibility();
         });
       });
+      const markerSizeControl = document.getElementById("selected-marker-size");
+      if (markerSizeControl) {
+        markerSizeControl.value = String(latentStats.selected_marker_size);
+        markerSizeControl.addEventListener("input", () => {
+          applySelectedMarkerSize();
+        });
+      }
+      const searchButton = document.getElementById("search-button");
+      const searchValue = document.getElementById("search-value");
+      const clearButton = document.getElementById("search-clear-button");
+      if (searchButton) {
+        searchButton.addEventListener("click", runSearch);
+      }
+      if (searchValue) {
+        searchValue.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            runSearch();
+          }
+        });
+      }
+      if (clearButton) {
+        clearButton.addEventListener("click", clearSearchResult);
+      }
       updateStaticStats();
+      applySelectedMarkerSize();
       applyVisibility();
     }
 

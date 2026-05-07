@@ -15,6 +15,9 @@ class SelectionResult:
     final_selected: np.ndarray
     initial_distances: np.ndarray
     final_distances: np.ndarray
+    requested_num_frames: int
+    resolved_num_frames: int
+    auto_num_frames_summary: dict[str, object] | None = None
 
 
 class SelectionStrategy(ABC):
@@ -86,6 +89,137 @@ def distance_variance(latents: np.ndarray, selected_candidate_orders: np.ndarray
     if len(distances) == 0:
         return 0.0
     return float(np.var(distances))
+
+
+def distance_cv(distances: np.ndarray) -> float:
+    if len(distances) == 0:
+        return 0.0
+    mean = float(np.mean(distances))
+    if mean <= 1e-12:
+        return 0.0
+    return float(np.std(distances) / mean)
+
+
+def _as_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _as_int(value: object, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: object, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def resolve_num_frames_by_cv(
+    latents: np.ndarray,
+    config: SelectionConfig,
+    cumulative: np.ndarray,
+) -> tuple[int, dict[str, object] | None]:
+    raw_auto_config = config.kwargs.get("auto_num_frames")
+    if not isinstance(raw_auto_config, dict) or not _as_bool(raw_auto_config.get("enabled"), False):
+        return config.num_frames, None
+
+    candidate_count = len(latents)
+    min_frames = max(2, _as_int(raw_auto_config.get("min_frames"), config.num_frames))
+    max_frames = max(min_frames, _as_int(raw_auto_config.get("max_frames"), candidate_count))
+    max_frames = min(max_frames, candidate_count)
+    search_step = max(1, _as_int(raw_auto_config.get("search_step"), 10))
+    cv_threshold = max(0.0, _as_float(raw_auto_config.get("cv_threshold"), 0.2))
+    refine_candidates = _as_bool(raw_auto_config.get("refine_candidates"), False)
+
+    candidate_values = list(range(min_frames, max_frames + 1, search_step))
+    if candidate_values[-1] != max_frames:
+        candidate_values.append(max_frames)
+
+    best_num_frames: int | None = None
+    best_cv: float | None = None
+    evaluated: list[dict[str, float | int | bool]] = []
+    print(
+        "  - auto num_frames enabled: "
+        f"method=max_k_under_cv, min_frames={min_frames}, max_frames={max_frames}, "
+        f"cv_threshold={cv_threshold:.6f}, search_step={search_step}, "
+        f"refine_candidates={refine_candidates}"
+    )
+    for num_frames in candidate_values:
+        initial_selected = initial_selection_by_arclength(
+            cumulative=cumulative,
+            num_frames=num_frames,
+            include_endpoints=config.include_endpoints,
+        )
+        selected = initial_selected
+        if refine_candidates:
+            selected = refine_selection_by_local_search(
+                latents=latents,
+                selected_candidate_orders=initial_selected,
+                iterations=config.local_refine_iterations,
+                window=config.local_refine_window,
+                include_endpoints=config.include_endpoints,
+            )
+        distances = selected_distances(latents, selected)
+        cv = distance_cv(distances)
+        passed = cv <= cv_threshold
+        evaluated.append(
+            {
+                "num_frames": int(num_frames),
+                "cv": float(cv),
+                "mean": float(np.mean(distances)) if len(distances) else 0.0,
+                "variance": float(np.var(distances)) if len(distances) else 0.0,
+                "passed": bool(passed),
+            }
+        )
+        print(
+            "  - auto num_frames candidate: "
+            f"num_frames={num_frames}, cv={cv:.6f}, "
+            f"threshold={cv_threshold:.6f}, passed={passed}"
+        )
+        if passed:
+            best_num_frames = int(num_frames)
+            best_cv = cv
+
+    if best_num_frames is None:
+        best_row = min(evaluated, key=lambda row: (float(row["cv"]), -int(row["num_frames"])))
+        best_num_frames = int(best_row["num_frames"])
+        best_cv = float(best_row["cv"])
+        fallback_reason = "no_candidate_under_cv_threshold"
+    else:
+        fallback_reason = None
+
+    summary: dict[str, object] = {
+        "enabled": True,
+        "method": "max_k_under_cv",
+        "cv_threshold": float(cv_threshold),
+        "min_frames": int(min_frames),
+        "max_frames": int(max_frames),
+        "search_step": int(search_step),
+        "refine_candidates": bool(refine_candidates),
+        "selected_num_frames": int(best_num_frames),
+        "selected_cv": float(best_cv) if best_cv is not None else None,
+        "fallback_reason": fallback_reason,
+        "evaluated": evaluated,
+    }
+    print(
+        "  - auto num_frames selected: "
+        f"num_frames={best_num_frames}, cv={best_cv:.6f}, fallback_reason={fallback_reason}"
+    )
+    return best_num_frames, summary
 
 
 def refine_selection_by_local_search(
@@ -186,9 +320,14 @@ class ArclengthLocalRefineSelectionStrategy(SelectionStrategy):
         )
         cumulative = cumulative_path_distances(latents)
         print(f"  - cumulative latent path length: {float(cumulative[-1]):.6f}")
+        resolved_num_frames, auto_num_frames_summary = resolve_num_frames_by_cv(
+            latents=latents,
+            config=config,
+            cumulative=cumulative,
+        )
         initial_selected = initial_selection_by_arclength(
             cumulative=cumulative,
-            num_frames=config.num_frames,
+            num_frames=resolved_num_frames,
             include_endpoints=config.include_endpoints,
         )
         initial_distances = selected_distances(latents, initial_selected)
@@ -222,6 +361,9 @@ class ArclengthLocalRefineSelectionStrategy(SelectionStrategy):
             final_selected=final_selected,
             initial_distances=initial_distances,
             final_distances=final_distances,
+            requested_num_frames=config.num_frames,
+            resolved_num_frames=resolved_num_frames,
+            auto_num_frames_summary=auto_num_frames_summary,
         )
 
 

@@ -116,13 +116,33 @@ visualization:
 | visualization | `keyframe_pipeline.visualizers.plotly_latent.PlotlyLatentVisualizationStrategy` | 기본 Plotly latent HTML |
 | visualization | `keyframe_pipeline.visualizers.plotly_latent_controls.PlotlyLatentControlsVisualizationStrategy` | 체크박스 제어/통계 패널/linear view 포함 Plotly latent HTML |
 
+## 자동 keyframe 개수 선택
+
+기본 동작은 `selection.num_frames`에 지정한 개수를 그대로 사용합니다. 자동 선택은 `selection.kwargs.auto_num_frames.enabled`를 `true`로 설정했을 때만 활성화됩니다.
+
+```yaml
+selection:
+  num_frames: 350
+  kwargs:
+    auto_num_frames:
+      enabled: true
+      method: max_k_under_cv
+      min_frames: 50
+      max_frames: 500
+      cv_threshold: 0.20
+      search_step: 10
+      refine_candidates: false
+```
+
+자동 선택은 selected frame 사이 latent 거리의 `CV = 표준편차 / 평균`이 `cv_threshold` 이하인 후보 중 가장 큰 `k`를 선택합니다. `refine_candidates: true`로 설정하면 각 후보 `k` 평가 때도 local refinement를 수행하지만 실행 시간이 늘어납니다.
+
 ## 산출물
 
 `output.output_dir`가 이미 존재하면 기존 결과를 덮어쓰지 않고 `<name>_001`, `<name>_002` 형식의 새 폴더를 생성합니다.
 
 | 파일 | 설명 |
 |---|---|
-| `selected_frames.csv` | 선택된 프레임 순서, 원본 frame index, timestamp, latent 거리, 이미지 경로 |
+| `selected_frames.csv` | 선택된 프레임 순서, 원본 frame index, timestamp, latent 거리, cluster 분기, 이미지 경로 |
 | `selected_frames/*.png` | 최종 선택 프레임 이미지 |
 | `uniform_frames/*.png` | 비교용 균등 샘플링 프레임 이미지 |
 | `frame_index_comparison.png` | selection order 기준 uniform/keyframe frame index 비교 plot |
@@ -145,10 +165,13 @@ visualization:
 | Selected path | 선택 프레임 연결 경로 |
 | Selected frames | 최종 선택 프레임 점 |
 | Selected labels | 선택 프레임 label |
+| Cluster endpoints | cluster별 시작/종료 선택 프레임 표시 |
 | Candidate order | candidate order label |
 | Linear latent view | latent trajectory 진행을 시작~종료 직선 위에 펼친 보조 view |
 
-통계 패널에는 표시 중인 frame point 수, 선택 프레임 수, 선택 프레임 사이 latent L2 거리 평균/분산/표준편차, frame/time 범위가 표시됩니다.
+통계 패널에는 표시 중인 frame point 수, 선택 프레임 수, 선택 프레임 사이 latent L2 거리 평균/분산/표준편차, frame/time 범위가 표시됩니다. HTML 컨트롤에서 selected frame 점 크기를 조절하고, candidate order, frame index, selection order로 노드를 검색할 수 있습니다.
+
+선택 프레임 사이 latent L2 거리는 먼저 selected 거리 기준으로 판단 대상 거리를 제외한 좌우 4개 주변 거리의 `local median + 3.5 * MAD scale`, 전체 거리의 `global 95 percentile`, 주변 median 대비 `1.5x` 비율 조건을 모두 만족할 때 분기 후보로 취급됩니다. 이후 해당 구간 주변 candidate adjacent 거리의 `local median + 3.5 * MAD scale`로 기대 거리를 계산하고, selected 거리가 이 기대 거리의 `2.0x` 이상일 때만 cluster 분기 후보로 유지합니다. candidate 흐름 자체가 sparse한 구간은 기대 거리가 커지므로 분할 기준이 완화됩니다. 후보 분기 후에는 최소 cluster 크기 3개를 만족하지 않는 작은 cluster가 생기지 않도록 가까운 분기를 병합합니다. `latent_space.html`에서는 분리된 selected cluster가 서로 다른 색으로 표시되고, `selected_frames.csv`, `all_frame_latents.npz`, `selection_metrics.json`에도 cluster 정보가 저장됩니다.
 
 ### `timeline_comparison.mp4`
 
