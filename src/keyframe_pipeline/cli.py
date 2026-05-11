@@ -202,6 +202,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         distances=final_distances,
         latents=latents,
         image_paths=image_paths,
+        precluster_summary=selection_result.precluster_summary,
     )
     print(f"  - selected frame CSV saved: {csv_path}")
 
@@ -221,6 +222,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         selected_candidate_orders=final_selected,
         distances=final_distances,
         fps=fps,
+        precluster_summary=selection_result.precluster_summary,
     )
     print(f"  - latent NPZ saved: {latent_npz_path}")
     save_metrics_json(

@@ -13,6 +13,27 @@ selection:
   include_endpoints: true
   local_refine_iterations: 20
   local_refine_window: 30
+  kwargs:
+    auto_num_frames:
+      enabled: true
+      frame_limit_enabled: false
+      target_gap_ratio: 12.0
+      soft_cv_target: 0.25
+      density_weight: 1.0
+      cv_weight: 0.5
+      search_step: 5
+      refine_candidates: false
+    precluster:
+      enabled: true
+      global_percentile: 99.0
+      local_window: 5
+      local_mad_multiplier: 3.5
+      min_local_median_ratio: 8.0
+      min_local_threshold_ratio: 3.0
+      max_neighbor_high_count: 1
+      min_cluster_frames: 30
+      min_frames_per_cluster: 2
+
 
 model:
   name: conv_autoencoder
@@ -50,6 +71,9 @@ output:
   selected_frame_dir: selected_frames
   uniform_frame_dir: uniform_frames
   frame_index_plot: frame_index_comparison.png
+  timeline_comparison_video: timeline_comparison.mp4
+  selected_vs_uniform_video: selected_vs_uniform.mp4
+  selected_vs_uniform_interval_sec: 0.5
   latent_html: latent_space.html
   latent_npz: all_frame_latents.npz
   checkpoint: autoencoder.pt
