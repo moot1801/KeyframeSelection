@@ -114,7 +114,40 @@ visualization:
 | loss | `keyframe_pipeline.losses.basic.MSELossStrategy` | MSE reconstruction loss |
 | selection | `keyframe_pipeline.selectors.arclength_local_refine.ArclengthLocalRefineSelectionStrategy` | latent arclength 초기 선택 + local variance refinement |
 | visualization | `keyframe_pipeline.visualizers.plotly_latent.PlotlyLatentVisualizationStrategy` | 기본 Plotly latent HTML |
-| visualization | `keyframe_pipeline.visualizers.plotly_latent_controls.PlotlyLatentControlsVisualizationStrategy` | 체크박스 제어/통계 패널/linear view 포함 Plotly latent HTML |
+| visualization | `keyframe_pipeline.visualizers.plotly_latent_controls.PlotlyLatentControlsVisualizationStrategy` | 기본 Plotly latent HTML 호환 wrapper |
+
+## 자동 keyframe 개수 선택
+
+기본 동작은 `selection.num_frames`에 지정한 개수를 그대로 사용합니다. 자동 선택은 `selection.kwargs.auto_num_frames.enabled`를 `true`로 설정했을 때만 활성화됩니다.
+
+```yaml
+selection:
+  num_frames: 350
+  kwargs:
+    auto_num_frames:
+      enabled: true
+      frame_limit_enabled: false
+      target_gap_ratio: 10.0
+      soft_cv_target: 0.25
+      density_weight: 1.0
+      cv_weight: 0.5
+      search_step: 10
+      refine_candidates: false
+    precluster:
+      enabled: true
+      global_percentile: 99.0
+      local_window: 5
+      local_mad_multiplier: 3.5
+      min_local_median_ratio: 8.0
+      min_local_threshold_ratio: 3.0
+      max_neighbor_high_count: 1
+      min_cluster_frames: 30
+      min_frames_per_cluster: 2
+```
+
+자동 선택은 selected frame 사이 평균 latent 거리를 cluster 내부 candidate adjacent 거리의 median으로 나눈 `gap_ratio`가 `target_gap_ratio`에 가까울수록 낮은 점수를 주고, `CV = 표준편차 / 평균`이 `soft_cv_target`을 초과한 만큼 penalty를 더합니다. 점수는 `density_weight * |gap_ratio-target|/target + cv_weight * max(0, CV-soft_cv_target)`입니다. `frame_limit_enabled: false`이면 탐색 상한은 전체 candidate 수의 `1/5`이고, `true`이면 `min_frames`와 `max_frames` 범위 안에서만 탐색합니다. `refine_candidates: true`로 설정하면 각 후보 `k` 평가 때도 local refinement를 수행하지만 실행 시간이 늘어납니다.
+
+`precluster.enabled: true`이면 전체 candidate adjacent latent distance에서 scene jump를 먼저 감지합니다. 후보 jump는 전체 분포 상위 outlier이면서 주변 median과 robust local threshold를 크게 초과해야 하며, 주변에도 큰 값이 연속되는 속도 변화 구간은 제외됩니다. precluster가 2개 이상 cluster를 만들면 cluster별로 프레임을 선택하고, 자동 `k` 평가의 CV/분산은 cluster boundary 거리를 제외한 cluster 내부 selected 거리로 계산합니다.
 
 ## 산출물
 
@@ -122,11 +155,12 @@ visualization:
 
 | 파일 | 설명 |
 |---|---|
-| `selected_frames.csv` | 선택된 프레임 순서, 원본 frame index, timestamp, latent 거리, 이미지 경로 |
+| `selected_frames.csv` | 선택된 프레임 순서, 원본 frame index, timestamp, latent 거리, precluster 정보, 이미지 경로 |
 | `selected_frames/*.png` | 최종 선택 프레임 이미지 |
 | `uniform_frames/*.png` | 비교용 균등 샘플링 프레임 이미지 |
 | `frame_index_comparison.png` | selection order 기준 uniform/keyframe frame index 비교 plot |
 | `timeline_comparison.mp4` | 왼쪽 원본 영상 + 오른쪽 frame index timeline 그래프 + 현재 위치 bar |
+| `selected_vs_uniform.mp4` | 왼쪽 KS 선택 프레임 + 오른쪽 균등 샘플링 프레임을 일정 간격으로 넘기는 비교 영상 |
 | `all_frame_latents.npz` | 전체 영상 프레임 latent, frame index, timestamp, 선택 결과 |
 | `latent_space.html` | latent 공간, 선택 경로, label, 통계 패널 HTML |
 | `autoencoder.pt` | 학습된 autoencoder checkpoint |
@@ -136,18 +170,7 @@ visualization:
 
 ### `latent_space.html`
 
-`PlotlyLatentControlsVisualizationStrategy`를 사용하면 HTML 오른쪽 패널에서 아래 레이어를 체크박스로 켜고 끌 수 있습니다.
-
-| 레이어 | 설명 |
-|---|---|
-| Candidate frames | 전체 영상 프레임 latent 점 |
-| Selected path | 선택 프레임 연결 경로 |
-| Selected frames | 최종 선택 프레임 점 |
-| Selected labels | 선택 프레임 label |
-| Candidate order | candidate order label |
-| Linear latent view | latent trajectory 진행을 시작~종료 직선 위에 펼친 보조 view |
-
-통계 패널에는 표시 중인 frame point 수, 선택 프레임 수, 선택 프레임 사이 latent L2 거리 평균/분산/표준편차, frame/time 범위가 표시됩니다.
+`latent_space.html`은 전체 candidate latent와 최종 selected path를 표시합니다. cluster 분리는 selected frame 거리 후처리가 아니라 `precluster` 결과만 기준으로 판단하며, 해당 정보는 `selected_frames.csv`, `all_frame_latents.npz`, `selection_metrics.json`에 저장됩니다.
 
 ### `timeline_comparison.mp4`
 
@@ -160,6 +183,16 @@ visualization:
 | selected row | keyframe selector가 고른 frame index |
 | uniform row | 균등 샘플링 비교 frame index |
 | current bar | 현재 재생 중인 원본 frame index 위치 |
+
+### `selected_vs_uniform.mp4`
+
+KS 선택 프레임 집합과 균등 샘플링 프레임 집합을 같은 순서로 나란히 보여주는 MP4 산출물입니다.
+
+| 영역 | 설명 |
+|---|---|
+| 왼쪽 | KS selector가 선택한 프레임 |
+| 오른쪽 | 같은 order의 균등 샘플링 프레임 |
+| 전환 간격 | `output.selected_vs_uniform_interval_sec`, 기본값 `0.2`초 |
 
 ## 선택 알고리즘
 

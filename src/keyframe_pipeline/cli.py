@@ -54,6 +54,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         encode_video_frames,
         export_selected_images,
         extract_candidate_frames,
+        save_selected_vs_uniform_video,
         save_timeline_comparison_video,
     )
     from keyframe_pipeline.visualizers import build_visualizer, save_frame_index_comparison_plot
@@ -153,7 +154,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
     )
     print(f"  - selected images saved: count={len(image_paths)}, dir={selected_image_dir}")
 
-    uniform_frame_indices = compute_sample_indices(total_frames, config.selection.num_frames)
+    uniform_frame_indices = compute_sample_indices(total_frames, len(final_selected))
     uniform_image_dir = output_dir / config.output.uniform_frame_dir
     export_selected_images(
         video_path=config.video.input_path,
@@ -165,6 +166,15 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         filename_prefix="uniform",
     )
     print(f"  - uniform comparison images saved: count={len(uniform_frame_indices)}, dir={uniform_image_dir}")
+    selected_vs_uniform_video_path = output_dir / config.output.selected_vs_uniform_video
+    save_selected_vs_uniform_video(
+        video_path=config.video.input_path,
+        selected_frame_indices=selected_frame_indices,
+        uniform_frame_indices=uniform_frame_indices,
+        output_path=selected_vs_uniform_video_path,
+        interval_sec=config.output.selected_vs_uniform_interval_sec,
+    )
+    print(f"  - selected/uniform comparison video saved: {selected_vs_uniform_video_path}")
     frame_index_plot_path = output_dir / config.output.frame_index_plot
     save_frame_index_comparison_plot(
         output_path=frame_index_plot_path,
@@ -190,7 +200,9 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         selected_timestamps_sec=selected_timestamps_sec,
         cumulative=selection_result.cumulative,
         distances=final_distances,
+        latents=latents,
         image_paths=image_paths,
+        precluster_summary=selection_result.precluster_summary,
     )
     print(f"  - selected frame CSV saved: {csv_path}")
 
@@ -210,6 +222,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         selected_candidate_orders=final_selected,
         distances=final_distances,
         fps=fps,
+        precluster_summary=selection_result.precluster_summary,
     )
     print(f"  - latent NPZ saved: {latent_npz_path}")
     save_metrics_json(
@@ -218,6 +231,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         selection_result=selection_result,
         uniform_frame_indices=uniform_frame_indices,
         frame_indices=frame_indices,
+        latents=latents,
         config=config,
     )
     print(f"  - metrics JSON saved: {metrics_path}")
@@ -242,6 +256,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         "selected_csv": csv_path,
         "selected_frame_dir": selected_image_dir,
         "uniform_frame_dir": uniform_image_dir,
+        "selected_vs_uniform_video": selected_vs_uniform_video_path,
         "frame_index_plot": frame_index_plot_path,
         "timeline_comparison_video": timeline_video_path,
         "latent_html": latent_html_path,

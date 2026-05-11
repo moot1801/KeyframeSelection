@@ -71,6 +71,8 @@ class OutputConfig:
     uniform_frame_dir: str
     frame_index_plot: str
     timeline_comparison_video: str
+    selected_vs_uniform_video: str
+    selected_vs_uniform_interval_sec: float
     latent_html: str
     latent_npz: str
     checkpoint: str
@@ -440,6 +442,13 @@ def parse_config(config_path: Path) -> PipelineConfig:
             timeline_comparison_video=str(
                 optional_value(output, "timeline_comparison_video", "timeline_comparison.mp4")
             ),
+            selected_vs_uniform_video=str(
+                optional_value(output, "selected_vs_uniform_video", "selected_vs_uniform.mp4")
+            ),
+            selected_vs_uniform_interval_sec=as_float(
+                optional_value(output, "selected_vs_uniform_interval_sec", 0.2),
+                "output.selected_vs_uniform_interval_sec",
+            ),
             latent_html=str(require_value(output, "output", "latent_html")),
             latent_npz=str(require_value(output, "output", "latent_npz")),
             checkpoint=str(require_value(output, "output", "checkpoint")),
@@ -550,3 +559,5 @@ def validate_config(config: PipelineConfig) -> None:
         raise ValueError("visualization.module 값이 필요합니다.")
     if not config.visualization.class_name:
         raise ValueError("visualization.class_name 값이 필요합니다.")
+    if config.output.selected_vs_uniform_interval_sec <= 0:
+        raise ValueError("output.selected_vs_uniform_interval_sec는 0보다 커야 합니다.")
