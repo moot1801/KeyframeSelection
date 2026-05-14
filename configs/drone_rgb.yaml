@@ -11,13 +11,13 @@ selection:
   num_frames: 32
   distance_metric: l2
   include_endpoints: true
-  local_refine_iterations: 15
+  local_refine_iterations: 20
   local_refine_window: 30
   kwargs:
     auto_num_frames:
       enabled: true
       frame_limit_enabled: false
-      target_gap_ratio: 10.0
+      target_gap_ratio: 12.0
       soft_cv_target: 0.25
       density_weight: 1.0
       cv_weight: 0.5

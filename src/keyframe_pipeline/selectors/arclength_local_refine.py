@@ -362,7 +362,8 @@ def _auto_num_frame_bounds(
         max_frames = min(max_frames, candidate_count)
         min_frames = min(min_frames, max_frames)
         return True, min_frames, max_frames
-    max_frames = min(candidate_count, max(minimum_frames, candidate_count // 5))
+    auto_max_frames = min(max(candidate_count // 5, 5), 25)
+    max_frames = min(candidate_count, max(minimum_frames, auto_max_frames))
     return False, minimum_frames, max_frames
 
 

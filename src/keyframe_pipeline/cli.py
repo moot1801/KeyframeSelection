@@ -244,6 +244,7 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
         timestamps_sec=timestamps_sec,
         selected_candidate_orders=final_selected,
         config=config.visualization,
+        precluster_summary=selection_result.precluster_summary,
     )
     print(f"  - latent HTML saved: {latent_html_path}")
 

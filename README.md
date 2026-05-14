@@ -114,7 +114,7 @@ visualization:
 | loss | `keyframe_pipeline.losses.basic.MSELossStrategy` | MSE reconstruction loss |
 | selection | `keyframe_pipeline.selectors.arclength_local_refine.ArclengthLocalRefineSelectionStrategy` | latent arclength 초기 선택 + local variance refinement |
 | visualization | `keyframe_pipeline.visualizers.plotly_latent.PlotlyLatentVisualizationStrategy` | 기본 Plotly latent HTML |
-| visualization | `keyframe_pipeline.visualizers.plotly_latent_controls.PlotlyLatentControlsVisualizationStrategy` | 기본 Plotly latent HTML 호환 wrapper |
+| visualization | `keyframe_pipeline.visualizers.plotly_latent_controls.PlotlyLatentControlsVisualizationStrategy` | Plotly latent HTML + layer/cluster controls |
 
 ## 자동 keyframe 개수 선택
 
@@ -171,6 +171,16 @@ selection:
 ### `latent_space.html`
 
 `latent_space.html`은 전체 candidate latent와 최종 selected path를 표시합니다. cluster 분리는 selected frame 거리 후처리가 아니라 `precluster` 결과만 기준으로 판단하며, 해당 정보는 `selected_frames.csv`, `all_frame_latents.npz`, `selection_metrics.json`에 저장됩니다.
+
+`plotly_latent_controls`는 HTML 우측 패널에서 다음 기능을 제공합니다.
+
+| 기능 | 설명 |
+|---|---|
+| layer toggle | candidate frames, selected frames, frame path 표시/숨김 |
+| cluster toggle | precluster별 checkbox로 특정 cluster만 표시/숨김 |
+| cluster endpoints | 각 cluster 시작점은 초록 diamond, 끝점은 빨간 x marker로 표시 |
+| point size | candidate/selected frame marker 크기 slider 조절 |
+| stats panel | trajectory 거리, selected 거리, cluster별 path/selected 통계 |
 
 ### `timeline_comparison.mp4`
 

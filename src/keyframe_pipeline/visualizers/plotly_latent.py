@@ -25,6 +25,7 @@ class LatentVisualizationStrategy(ABC):
         timestamps_sec: np.ndarray,
         selected_candidate_orders: np.ndarray,
         config: VisualizationConfig,
+        precluster_summary: dict[str, object] | None = None,
     ) -> None:
         raise NotImplementedError
 
@@ -102,6 +103,7 @@ class PlotlyLatentVisualizationStrategy(LatentVisualizationStrategy):
         timestamps_sec: np.ndarray,
         selected_candidate_orders: np.ndarray,
         config: VisualizationConfig,
+        precluster_summary: dict[str, object] | None = None,
     ) -> None:
         go, pio = ensure_plotly_available()
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -276,6 +278,7 @@ class DisabledVisualizationStrategy(LatentVisualizationStrategy):
         timestamps_sec: np.ndarray,
         selected_candidate_orders: np.ndarray,
         config: VisualizationConfig,
+        precluster_summary: dict[str, object] | None = None,
     ) -> None:
         return None
 
